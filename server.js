@@ -1,28 +1,35 @@
 const express = require('express');
+const axios = require('axios');
 const app = express();
-
-// Telnyx sends form-encoded data first, JSON sometimes later
-app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-app.post('/telnyx-webhook', (req, res) => {
-  console.log("📞 Incoming Webhook Body:");
-  console.log(req.body);
+app.post('/telnyx-webhook', async (req, res) => {
+  const event = req.body.data;
+  if (!event || !event.payload) return res.sendStatus(200);
 
-  // Proper XML string using backticks
-  const texml = `<?xml version="1.0" encoding="UTF-8"?>
+  const callControlId = event.payload.call_control_id;
+
+  // Only respond to initiated events
+  if (event.event_type === 'call.initiated') {
+    // Answer the call via Telnyx API
+    await axios.post(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
+      {},
+      { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
+    );
+  }
+
+  // TWiML to speak and hang up
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Speak voice="female" language="en-US">
     Hello. This is your AI. The webhook works.
   </Speak>
-  <Pause length="3"/>
+  <Hangup/>
 </Response>`;
 
-  // ❗ Telnyx requires text/xml or it ignores the response
   res.set('Content-Type', 'text/xml');
-  res.send(texml);
+  res.send(twiml);
 });
 
-app.listen(process.env.PORT || 3000, () =>
-  console.log("🚀 Server running on port", process.env.PORT || 3000)
-);
+app.listen(process.env.PORT || 3000, () => console.log('Server running'));
