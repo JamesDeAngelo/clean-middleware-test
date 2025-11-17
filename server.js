@@ -1,64 +1,28 @@
-// server.js
 const express = require('express');
-const axios = require('axios');
 const app = express();
 
+// Telnyx sends form-encoded data first, JSON sometimes later
+app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Telnyx sends JSON for Voice API
-app.post('/telnyx-webhook', async (req, res) => {
-  const data = req.body.data;
-  console.log("📞 Incoming:", JSON.stringify(data, null, 2));
+app.post('/telnyx-webhook', (req, res) => {
+  console.log("📞 Incoming Webhook Body:");
+  console.log(req.body);
 
-  // Telnyx event type
-  const eventType = data.event_type;
+  // Proper XML string using backticks
+  const texml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Speak voice="female" language="en-US">
+    Hello. This is your AI. The webhook works.
+  </Speak>
+  <Pause length="3"/>
+</Response>`;
 
-  // Each call has a unique call_control_id
-  const callControlId = data.payload.call_control_id;
-
-  // 1️⃣ The moment the call is answered ("call.answered") → speak
-  if (eventType === "call.answered") {
-    console.log("☎️ Call answered — sending Speak command...");
-
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-      {
-        payload: "Hello. Your AI is now online."
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.TELNYX_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    return res.sendStatus(200);
-  }
-
-  // 2️⃣ If call is incoming but not answered yet
-  if (eventType === "call.initiated") {
-    console.log("☎️ Call initiated — answering...");
-
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
-      {},
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.TELNYX_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    return res.sendStatus(200);
-  }
-
-  // Default response
-  return res.sendStatus(200);
+  // ❗ Telnyx requires text/xml or it ignores the response
+  res.set('Content-Type', 'text/xml');
+  res.send(texml);
 });
 
-// Start server
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running on port", process.env.PORT || 3000);
-});
+app.listen(process.env.PORT || 3000, () =>
+  console.log("🚀 Server running on port", process.env.PORT || 3000)
+);
