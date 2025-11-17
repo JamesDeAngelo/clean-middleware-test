@@ -1,5 +1,6 @@
 const express = require('express');
 const bodyParser = require('body-parser');
+const fetch = require('node-fetch'); // use require, not await import
 
 const app = express();
 app.use(bodyParser.json());
@@ -13,8 +14,6 @@ app.post('/texml-webhook', (req, res) => {
   console.log(`📞 Event received: ${eventType}`);
   console.log(JSON.stringify(req.body, null, 2));
 
-  // Basic TeXML response to answer the call and speak a message
-  // Remove <Hangup/> to keep call active
   const texmlResponse = `
     <Response>
       <Speak>Hi! This is your AI speaking.</Speak>
@@ -29,7 +28,6 @@ app.post('/texml-webhook', (req, res) => {
 
 // --- Optional: start outbound call endpoint ---
 app.post('/start-call', async (req, res) => {
-  const fetch = (await import('node-fetch')).default;
   try {
     const response = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',
@@ -38,11 +36,11 @@ app.post('/start-call', async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        to: process.env.SIP_ENDPOINT,       // Your TeXML SIP endpoint
-        from: process.env.FROM_NUMBER,      
+        to: process.env.SIP_ENDPOINT,
+        from: process.env.FROM_NUMBER,
         timeout_secs: 30,
         texml: {
-          url: `${process.env.SERVER_BASE_URL}/texml-webhook` // URL returning TeXML
+          url: `${process.env.SERVER_BASE_URL}/texml-webhook`
         }
       })
     });
