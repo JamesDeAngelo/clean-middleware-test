@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 
-// Telnyx sends form data, NOT JSON
+// Telnyx sends form-encoded data first, JSON sometimes later
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
@@ -9,15 +9,18 @@ app.post('/texml-webhook', (req, res) => {
   console.log("📞 Incoming Webhook Body:");
   console.log(req.body);
 
-  const texmlResponse = `
+  const texml = `
     <Response>
-      <Speak voice="female" language="en-US">Hello, your AI is online.</Speak>
-      <Pause length="5"/>
+      <Speak voice="female" language="en-US">
+        Hello. This is your AI. The webhook works.
+      </Speak>
+      <Pause length="3"/>
     </Response>
   `;
 
-  res.set('Content-Type', 'application/xml');
-  res.send(texmlResponse);
+  // ❗ Telnyx requires text/xml or it ignores the response
+  res.set('Content-Type', 'text/xml');
+  res.send(texml);
 });
 
 app.listen(process.env.PORT || 3000, () =>
