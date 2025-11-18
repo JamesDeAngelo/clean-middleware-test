@@ -1,22 +1,25 @@
 const express = require('express');
 const app = express();
 
-// Parse JSON & URL-encoded
+// Parse JSON & URL-encoded (form) payloads
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Health check
 app.get('/', (req, res) => res.send('TexML + Voiceflow webhook live!'));
 
-// Main webhook
+// Main TexML webhook
 app.post('/texml-webhook', (req, res) => {
   const event = req.body;
 
   console.log('🚨 Webhook HIT');
   console.log('📞 Incoming TexML event:', JSON.stringify(event, null, 2));
 
-  // Detect incoming call
-  if (event.CallbackSource === 'call-progress-events' && event.CallStatus === 'ringing') {
+  // Respond to call.initiated or first ringing event
+  if (
+    event.event_type === 'call.initiated' ||
+    (event.CallbackSource === 'call-progress-events' && event.CallStatus === 'ringing')
+  ) {
     const caller = event.From || 'unknown';
 
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -34,7 +37,7 @@ app.post('/texml-webhook', (req, res) => {
 
     console.log(`✅ TexML sent to answer and connect caller ${caller}`);
   } else {
-    // Respond 200 to all other events
+    // For all other events, respond 200 OK
     res.sendStatus(200);
   }
 });
