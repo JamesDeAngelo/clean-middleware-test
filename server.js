@@ -1,4 +1,6 @@
 const express = require('express');
+const axios = require('axios');
+const FormData = require('form-data');
 const app = express();
 
 // Middleware to parse JSON and XML
@@ -62,14 +64,44 @@ app.post('/transcription', async (req, res) => {
   }
 });
 
-// Handle recording completion
-app.post('/process-recording', (req, res) => {
+// Handle recording completion - transcribe with Whisper
+app.post('/process-recording', async (req, res) => {
   try {
     console.log('🎙️ Recording complete:', req.body);
     
     const recordingUrl = req.body.RecordingUrl;
+    const callSid = req.body.CallSid;
     
-    // For now, ask the next question
+    // Transcribe the recording with OpenAI Whisper
+    const transcription = await transcribeWithWhisper(recordingUrl);
+    console.log(`🗣️ Caller said (name): "${transcription}"`);
+    
+    // TODO: Store in Airtable
+    // TODO: Send to Voiceflow for context
+    
+    // Ask the next question
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="woman" language="en-US">
+    Thank you, ${transcription}. Now, can you please describe what happened in the accident?
+  </Say>
+  <Record 
+    action="/process-accident-details" 
+    method="POST" 
+    maxLength="30" 
+    timeout="3"
+    transcribe="false"
+    playBeep="false"
+  />
+</Response>`;
+
+    res.type('application/xml');
+    res.send(texmlResponse);
+    
+  } catch (error) {
+    console.error('❌ Error:', error);
+    
+    // Fallback response if transcription fails
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
@@ -80,25 +112,28 @@ app.post('/process-recording', (req, res) => {
     method="POST" 
     maxLength="30" 
     timeout="3"
-    transcribe="true"
-    transcribeCallback="/transcription"
     playBeep="false"
   />
 </Response>`;
-
+    
     res.type('application/xml');
     res.send(texmlResponse);
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    res.status(500).send('Error');
   }
 });
 
 // Handle accident details recording
-app.post('/process-accident-details', (req, res) => {
+app.post('/process-accident-details', async (req, res) => {
   try {
     console.log('📋 Accident details received:', req.body);
+    
+    const recordingUrl = req.body.RecordingUrl;
+    
+    // Transcribe accident details
+    const accidentDetails = await transcribeWithWhisper(recordingUrl);
+    console.log(`📝 Accident details: "${accidentDetails}"`);
+    
+    // TODO: Store in Airtable with name + details
+    // TODO: Send SMS/Email to lawyer via Zapier
     
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -113,9 +148,55 @@ app.post('/process-accident-details', (req, res) => {
     
   } catch (error) {
     console.error('❌ Error:', error);
-    res.status(500).send('Error');
+    
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="woman" language="en-US">
+    Thank you. A lawyer will contact you soon. Goodbye!
+  </Say>
+  <Hangup/>
+</Response>`;
+    
+    res.type('application/xml');
+    res.send(texmlResponse);
   }
 });
+
+// Transcribe audio using OpenAI Whisper
+async function transcribeWithWhisper(audioUrl) {
+  try {
+    // Download the audio file
+    const audioResponse = await axios.get(audioUrl, { responseType: 'arraybuffer' });
+    const audioBuffer = Buffer.from(audioResponse.data);
+    
+    // Create form data for Whisper API
+    const formData = new FormData();
+    formData.append('file', audioBuffer, {
+      filename: 'audio.mp3',
+      contentType: 'audio/mpeg'
+    });
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'en');
+    
+    // Call OpenAI Whisper API
+    const response = await axios.post(
+      'https://api.openai.com/v1/audio/transcriptions',
+      formData,
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...formData.getHeaders()
+        }
+      }
+    );
+    
+    return response.data.text.trim();
+    
+  } catch (error) {
+    console.error('❌ Whisper transcription error:', error.response?.data || error.message);
+    throw error;
+  }
+}
 
 // Health check endpoint
 app.get('/', (req, res) => {
