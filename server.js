@@ -1,31 +1,28 @@
 const express = require('express');
-const axios = require('axios');
 const app = express();
 
+// Parse incoming JSON from Telnyx
 app.use(express.json());
 
 // Health check
-app.get('/', (req, res) => res.send('Voiceflow-Telnyx TexML webhook live!'));
+app.get('/', (req, res) => res.send('TexML + Voiceflow webhook live!'));
 
-// Telnyx TexML webhook
-app.post('/telnyx-webhook', async (req, res) => {
+// Main TexML webhook
+app.post('/texml-webhook', (req, res) => {
   const event = req.body.data;
 
-  if (!event || !event.payload) return res.sendStatus(200);
-
+  console.log('🚨 Webhook HIT');
   console.log('📞 Incoming TexML event:', JSON.stringify(event, null, 2));
 
   // Only handle incoming calls
-  if (event.event_type === 'call.initiated') {
+  if (event && event.payload && event.event_type === 'call.initiated') {
     const caller = event.payload.from;
-    const callControlId = event.payload.call_control_id;
 
-    // TexML response to auto-answer and connect to Voiceflow
-    // Voiceflow webhook should handle the dynamic response logic
+    // TexML response: speak a line and connect to Voiceflow SIP endpoint
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Speak voice="alloy" language="en-US">
-    Connecting you to AI...
+    Hello! Connecting you to AI now.
   </Speak>
   <Connect>
     <Sip uri="sip:ai-bot@sip.telnyx.com"/>
@@ -38,9 +35,3 @@ app.post('/telnyx-webhook', async (req, res) => {
     console.log(`✅ TexML sent to answer and connect caller ${caller}`);
   } else {
     // For all other events, just respond 200
-    res.sendStatus(200);
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
