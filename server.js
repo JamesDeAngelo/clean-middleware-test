@@ -35,3 +35,12 @@ app.post('/texml-webhook', (req, res) => {
     console.log(`✅ TexML sent to answer and connect caller ${caller}`);
   } else {
     // For all other events, just respond 200
+    res.sendStatus(200);
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
