@@ -1,42 +1,66 @@
 const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
+const Airtable = require('airtable');
+
 const app = express();
 
-// Middleware to parse JSON and XML
+// Middleware
 app.use(express.json());
 app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
 
-// TeXML webhook endpoint - handles initial call
+// Initialize Airtable (optional - only if you have it set up)
+let airtableBase = null;
+if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
+  airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
+    .base(process.env.AIRTABLE_BASE_ID);
+}
+
+// Store call context in memory (upgrade to Redis later for production)
+const callContext = new Map();
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('🚀 AI Voice Agent Running! Endpoints: /texml-webhook');
+});
+
+// Initial webhook - greet caller and ask for name
 app.post('/texml-webhook', (req, res) => {
   try {
-    console.log('📞 Incoming TeXML Webhook:', req.body);
+    console.log('📞 Incoming call:', req.body);
     
-    // TeXML with voice recording to capture caller's speech
+    const callSid = req.body.CallSid;
+    const callerPhone = req.body.From;
+    
+    // Initialize call context
+    callContext.set(callSid, {
+      phone: callerPhone,
+      startTime: new Date().toISOString(),
+      name: null,
+      accidentDetails: null
+    });
+    
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
-    Hello! Thank you for calling. This is your A I legal assistant. I'm here to help gather information about your truck accident case.
+    Hello! Thank you for calling. This is your A I legal assistant for truck accident cases. I'm here to help gather information about your situation.
   </Say>
   <Pause length="1"/>
   <Say voice="woman" language="en-US">
     Can you please tell me your full name?
   </Say>
   <Record 
-    action="/process-recording" 
+    action="/process-name" 
     method="POST" 
     maxLength="10" 
     timeout="3"
-    transcribe="true"
-    transcribeCallback="/transcription"
     playBeep="false"
   />
 </Response>`;
 
     res.type('application/xml');
     res.send(texmlResponse);
-    console.log('✅ Sent TeXML response');
     
   } catch (error) {
     console.error('❌ Error:', error);
@@ -44,53 +68,39 @@ app.post('/texml-webhook', (req, res) => {
   }
 });
 
-// Handle recording transcription
-app.post('/transcription', async (req, res) => {
+// Process name recording
+app.post('/process-name', async (req, res) => {
   try {
-    console.log('📝 Transcription received:', req.body);
-    
-    const transcription = req.body.TranscriptionText || '';
-    const callSid = req.body.CallSid;
-    
-    console.log(`🗣️ Caller said: "${transcription}"`);
-    
-    // TODO: Send to Voiceflow + GPT-4 for processing
-    // TODO: Store in Airtable
-    
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('❌ Transcription error:', error);
-    res.status(500).send('Error');
-  }
-});
-
-// Handle recording completion - transcribe with Whisper
-app.post('/process-recording', async (req, res) => {
-  try {
-    console.log('🎙️ Recording complete:', req.body);
+    console.log('🎙️ Name recording received');
     
     const recordingUrl = req.body.RecordingUrl;
     const callSid = req.body.CallSid;
     
-    // Transcribe the recording with OpenAI Whisper
-    const transcription = await transcribeWithWhisper(recordingUrl);
-    console.log(`🗣️ Caller said (name): "${transcription}"`);
+    if (!recordingUrl) {
+      throw new Error('No recording URL provided');
+    }
     
-    // TODO: Store in Airtable
-    // TODO: Send to Voiceflow for context
+    // Transcribe with Whisper
+    const name = await transcribeWithWhisper(recordingUrl);
+    console.log(`✅ Caller name: "${name}"`);
     
-    // Ask the next question
+    // Store in context
+    const context = callContext.get(callSid) || {};
+    context.name = name;
+    callContext.set(callSid, context);
+    
+    // Ask about accident
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
-    Thank you, ${transcription}. Now, can you please describe what happened in the accident?
+    Thank you, ${sanitizeForSpeech(name)}. Now, can you please describe what happened in your truck accident? Please include when it occurred and any important details.
   </Say>
+  <Pause length="1"/>
   <Record 
-    action="/process-accident-details" 
+    action="/process-accident" 
     method="POST" 
-    maxLength="30" 
-    timeout="3"
-    transcribe="false"
+    maxLength="60" 
+    timeout="4"
     playBeep="false"
   />
 </Response>`;
@@ -99,19 +109,19 @@ app.post('/process-recording', async (req, res) => {
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Error processing name:', error);
     
-    // Fallback response if transcription fails
+    // Fallback without personalization
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
-    Thank you. Now, can you please describe what happened in the accident?
+    Thank you. Now, can you please describe what happened in your accident?
   </Say>
   <Record 
-    action="/process-accident-details" 
+    action="/process-accident" 
     method="POST" 
-    maxLength="30" 
-    timeout="3"
+    maxLength="60" 
+    timeout="4"
     playBeep="false"
   />
 </Response>`;
@@ -121,24 +131,58 @@ app.post('/process-recording', async (req, res) => {
   }
 });
 
-// Handle accident details recording
-app.post('/process-accident-details', async (req, res) => {
+// Process accident details
+app.post('/process-accident', async (req, res) => {
   try {
-    console.log('📋 Accident details received:', req.body);
+    console.log('📋 Accident recording received');
     
     const recordingUrl = req.body.RecordingUrl;
+    const callSid = req.body.CallSid;
+    const callerPhone = req.body.From;
+    
+    if (!recordingUrl) {
+      throw new Error('No recording URL provided');
+    }
     
     // Transcribe accident details
     const accidentDetails = await transcribeWithWhisper(recordingUrl);
-    console.log(`📝 Accident details: "${accidentDetails}"`);
+    console.log(`✅ Accident details: "${accidentDetails}"`);
     
-    // TODO: Store in Airtable with name + details
-    // TODO: Send SMS/Email to lawyer via Zapier
+    // Get full context
+    const context = callContext.get(callSid) || {};
+    context.accidentDetails = accidentDetails;
+    context.endTime = new Date().toISOString();
     
+    // Store in Airtable if configured
+    if (airtableBase) {
+      try {
+        await airtableBase('Leads').create({
+          "Caller Name": context.name || 'Unknown',
+          "Phone Number": callerPhone,
+          "Accident Details": accidentDetails,
+          "Call SID": callSid,
+          "Call Start": context.startTime,
+          "Qualified": determineQualification(accidentDetails),
+          "Status": "New"
+        });
+        console.log('✅ Saved to Airtable');
+      } catch (airtableError) {
+        console.error('⚠️ Airtable error:', airtableError.message);
+      }
+    }
+    
+    // Clean up context
+    callContext.delete(callSid);
+    
+    // Thank and hang up
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
-    Thank you for providing those details. A lawyer will review your case and contact you within 24 hours. Have a great day!
+    Thank you so much for sharing that information. I've recorded all the details about your case. A qualified truck accident attorney will review your information and contact you within 24 hours at the phone number you're calling from.
+  </Say>
+  <Pause length="1"/>
+  <Say voice="woman" language="en-US">
+    If you need to speak with someone urgently, please call us back anytime. Have a great day, and take care!
   </Say>
   <Hangup/>
 </Response>`;
@@ -147,12 +191,12 @@ app.post('/process-accident-details', async (req, res) => {
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Error processing accident:', error);
     
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="woman" language="en-US">
-    Thank you. A lawyer will contact you soon. Goodbye!
+    Thank you for the information. A lawyer will contact you soon. Goodbye!
   </Say>
   <Hangup/>
 </Response>`;
@@ -162,23 +206,30 @@ app.post('/process-accident-details', async (req, res) => {
   }
 });
 
-// Transcribe audio using OpenAI Whisper
+// Transcribe audio with OpenAI Whisper
 async function transcribeWithWhisper(audioUrl) {
   try {
-    // Download the audio file
-    const audioResponse = await axios.get(audioUrl, { responseType: 'arraybuffer' });
-    const audioBuffer = Buffer.from(audioResponse.data);
+    console.log(`🎧 Downloading audio from: ${audioUrl.substring(0, 80)}...`);
     
-    // Create form data for Whisper API
+    // Download audio file
+    const audioResponse = await axios.get(audioUrl, { 
+      responseType: 'arraybuffer',
+      timeout: 30000 // 30 second timeout
+    });
+    
+    const audioBuffer = Buffer.from(audioResponse.data);
+    console.log(`📦 Audio downloaded: ${audioBuffer.length} bytes`);
+    
+    // Prepare form data
     const formData = new FormData();
     formData.append('file', audioBuffer, {
-      filename: 'audio.mp3',
+      filename: 'recording.mp3',
       contentType: 'audio/mpeg'
     });
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
     
-    // Call OpenAI Whisper API
+    // Call Whisper API
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
       formData,
@@ -186,26 +237,43 @@ async function transcribeWithWhisper(audioUrl) {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
-        }
+        },
+        timeout: 30000
       }
     );
     
-    return response.data.text.trim();
+    const transcription = response.data.text.trim();
+    console.log(`✅ Transcription successful: ${transcription.length} chars`);
+    
+    return transcription;
     
   } catch (error) {
-    console.error('❌ Whisper transcription error:', error.response?.data || error.message);
-    throw error;
+    console.error('❌ Whisper error:', error.response?.data || error.message);
+    throw new Error('Transcription failed');
   }
 }
 
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.send('Telnyx TeXML server is running! ✅');
-});
+// Determine if lead is qualified (simple logic - enhance later)
+function determineQualification(details) {
+  const keywords = ['truck', 'semi', '18 wheeler', 'tractor trailer', 'commercial vehicle', 'injury', 'injured'];
+  const lowerDetails = details.toLowerCase();
+  
+  const hasKeyword = keywords.some(keyword => lowerDetails.includes(keyword));
+  return hasKeyword ? 'Yes' : 'Maybe';
+}
+
+// Sanitize text for speech (remove special chars that might confuse TTS)
+function sanitizeForSpeech(text) {
+  return text
+    .replace(/[<>]/g, '') // Remove XML chars
+    .substring(0, 100); // Limit length
+}
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📞 TeXML webhook available at: /texml-webhook`);
+  console.log(`📞 Webhook: /texml-webhook`);
+  console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`📊 Airtable: ${airtableBase ? '✅ Connected' : '⚠️ Not configured'}`);
 });
