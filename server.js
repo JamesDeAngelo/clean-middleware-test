@@ -4,69 +4,43 @@ const app = express();
 
 app.use(express.json());
 
-// Health check endpoint
-app.get('/', (req, res) => res.send('AI Voice Bot is live!'));
+// Health check
+app.get('/', (req, res) => res.send('Voiceflow-Telnyx TexML webhook live!'));
 
-// Telnyx Voice API webhook
+// Telnyx TexML webhook
 app.post('/telnyx-webhook', async (req, res) => {
   const event = req.body.data;
+
   if (!event || !event.payload) return res.sendStatus(200);
 
-  const callControlId = event.payload.call_control_id;
+  console.log('📞 Incoming TexML event:', JSON.stringify(event, null, 2));
 
-  try {
-    // 1️⃣ Answer the call when it's initiated
-    if (event.event_type === 'call.initiated') {
-      console.log(`📞 Incoming call detected: ${callControlId}`);
+  // Only handle incoming calls
+  if (event.event_type === 'call.initiated') {
+    const caller = event.payload.from;
+    const callControlId = event.payload.call_control_id;
 
-      await axios.post(
-        `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
-        {},
-        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
-      );
+    // TexML response to auto-answer and connect to Voiceflow
+    // Voiceflow webhook should handle the dynamic response logic
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Speak voice="alloy" language="en-US">
+    Connecting you to AI...
+  </Speak>
+  <Connect>
+    <Sip uri="sip:ai-bot@sip.telnyx.com"/>
+  </Connect>
+</Response>`;
 
-      console.log('✅ Call answered');
-    }
+    res.set('Content-Type', 'text/xml');
+    res.send(texmlResponse);
 
-    // 2️⃣ Play TTS audio only after the call is answered
-    if (event.event_type === 'call.answered') {
-      console.log(`🎤 Call answered confirmed: ${callControlId}, playing TTS`);
-
-      await axios.post(
-        `https://api.telnyx.com/v2/calls/${callControlId}/actions/play`,
-        {
-          audio: [
-            {
-              type: 'tts',
-              payload: 'Hello. This is your AI. The webhook works.',
-              voice: 'alloy',       // Valid Telnyx voice
-              language: 'en-US'
-            }
-          ]
-        },
-        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
-      );
-
-      console.log('✅ TTS audio played');
-
-      // 3️⃣ Hang up after audio finishes
-      await axios.post(
-        `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-        {},
-        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
-      );
-
-      console.log('✅ Call hung up');
-    }
-
-  } catch (err) {
-    console.error('⚠️ Error handling call:', err.response?.data || err.message);
+    console.log(`✅ TexML sent to answer and connect caller ${caller}`);
+  } else {
+    // For all other events, just respond 200
+    res.sendStatus(200);
   }
-
-  // Always respond 200 to Telnyx webhook
-  res.sendStatus(200);
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
