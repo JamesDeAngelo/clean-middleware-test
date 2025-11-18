@@ -4,7 +4,7 @@ const app = express();
 
 app.use(express.json());
 
-// Health check endpoint so Render doesn't get stuck
+// Health check endpoint
 app.get('/', (req, res) => res.send('AI Voice Bot is live!'));
 
 // Telnyx Voice API webhook
@@ -15,19 +15,23 @@ app.post('/telnyx-webhook', async (req, res) => {
   const callControlId = event.payload.call_control_id;
 
   try {
-    // Only handle incoming calls that are initiated
+    // 1️⃣ Answer the call when it's initiated
     if (event.event_type === 'call.initiated') {
       console.log(`📞 Incoming call detected: ${callControlId}`);
 
-      // 1️⃣ Answer the call
       await axios.post(
         `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
         {},
         { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
       );
-      console.log('✅ Call answered');
 
-      // 2️⃣ Play TTS audio (valid Telnyx voice)
+      console.log('✅ Call answered');
+    }
+
+    // 2️⃣ Play TTS audio only after the call is answered
+    if (event.event_type === 'call.answered') {
+      console.log(`🎤 Call answered confirmed: ${callControlId}, playing TTS`);
+
       await axios.post(
         `https://api.telnyx.com/v2/calls/${callControlId}/actions/play`,
         {
@@ -35,28 +39,31 @@ app.post('/telnyx-webhook', async (req, res) => {
             {
               type: 'tts',
               payload: 'Hello. This is your AI. The webhook works.',
-              voice: 'alloy',       // Valid Telnyx voice: alloy or aria
+              voice: 'alloy',       // Valid Telnyx voice
               language: 'en-US'
             }
           ]
         },
         { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
       );
+
       console.log('✅ TTS audio played');
 
-      // 3️⃣ Hang up the call after audio finishes
+      // 3️⃣ Hang up after audio finishes
       await axios.post(
         `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
         {},
         { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
       );
+
       console.log('✅ Call hung up');
     }
+
   } catch (err) {
     console.error('⚠️ Error handling call:', err.response?.data || err.message);
   }
 
-  // Respond 200 immediately so Telnyx knows the webhook was received
+  // Always respond 200 to Telnyx webhook
   res.sendStatus(200);
 });
 
