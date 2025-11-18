@@ -4,7 +4,7 @@ const app = express();
 
 app.use(express.json());
 
-// Health check endpoint so Render doesn’t hang
+// Health check endpoint so Render doesn't get stuck
 app.get('/', (req, res) => res.send('AI Voice Bot is live!'));
 
 // Telnyx Voice API webhook
@@ -27,7 +27,7 @@ app.post('/telnyx-webhook', async (req, res) => {
       );
       console.log('✅ Call answered');
 
-      // 2️⃣ Play TTS audio
+      // 2️⃣ Play TTS audio (valid Telnyx voice)
       await axios.post(
         `https://api.telnyx.com/v2/calls/${callControlId}/actions/play`,
         {
@@ -35,7 +35,7 @@ app.post('/telnyx-webhook', async (req, res) => {
             {
               type: 'tts',
               payload: 'Hello. This is your AI. The webhook works.',
-              voice: 'female',
+              voice: 'alloy',       // Valid Telnyx voice: alloy or aria
               language: 'en-US'
             }
           ]
@@ -44,7 +44,7 @@ app.post('/telnyx-webhook', async (req, res) => {
       );
       console.log('✅ TTS audio played');
 
-      // 3️⃣ Hang up the call after audio
+      // 3️⃣ Hang up the call after audio finishes
       await axios.post(
         `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
         {},
