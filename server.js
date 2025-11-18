@@ -20,7 +20,8 @@ app.post('/texml-webhook', (req, res) => {
     </Response>
   `;
 
-  res.set('Content-Type', 'text/xml');
+  // IMPORTANT: Telnyx requires application/xml
+  res.set('Content-Type', 'application/xml');
   res.send(texmlResponse);
 });
 
