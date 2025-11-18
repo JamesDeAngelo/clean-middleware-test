@@ -1,35 +1,65 @@
 const express = require('express');
 const axios = require('axios');
 const app = express();
+
 app.use(express.json());
 
+// Health check endpoint so Render doesn’t hang
+app.get('/', (req, res) => res.send('AI Voice Bot is live!'));
+
+// Telnyx Voice API webhook
 app.post('/telnyx-webhook', async (req, res) => {
   const event = req.body.data;
   if (!event || !event.payload) return res.sendStatus(200);
 
   const callControlId = event.payload.call_control_id;
 
-  // Only respond to initiated events
-  if (event.event_type === 'call.initiated') {
-    // Answer the call via Telnyx API
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
-      {},
-      { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
-    );
+  try {
+    // Only handle incoming calls that are initiated
+    if (event.event_type === 'call.initiated') {
+      console.log(`📞 Incoming call detected: ${callControlId}`);
+
+      // 1️⃣ Answer the call
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
+        {},
+        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
+      );
+      console.log('✅ Call answered');
+
+      // 2️⃣ Play TTS audio
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/play`,
+        {
+          audio: [
+            {
+              type: 'tts',
+              payload: 'Hello. This is your AI. The webhook works.',
+              voice: 'female',
+              language: 'en-US'
+            }
+          ]
+        },
+        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
+      );
+      console.log('✅ TTS audio played');
+
+      // 3️⃣ Hang up the call after audio
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+        {},
+        { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } }
+      );
+      console.log('✅ Call hung up');
+    }
+  } catch (err) {
+    console.error('⚠️ Error handling call:', err.response?.data || err.message);
   }
 
-  // TWiML to speak and hang up
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="female" language="en-US">
-    Hello. This is your AI. The webhook works.
-  </Speak>
-  <Hangup/>
-</Response>`;
-
-  res.set('Content-Type', 'text/xml');
-  res.send(twiml);
+  // Respond 200 immediately so Telnyx knows the webhook was received
+  res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000, () => console.log('Server running'));
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
