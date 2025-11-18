@@ -1,27 +1,39 @@
 const express = require('express');
 const app = express();
 
-// Parse JSON & URL-encoded (form) payloads
+// Parse JSON & URL-encoded payloads
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Health check
+// Simple health check
 app.get('/', (req, res) => res.send('TexML + Voiceflow webhook live!'));
 
-// Main TexML webhook
+// Keep track of which calls have been answered
+const answeredCalls = new Set();
+
 app.post('/texml-webhook', (req, res) => {
-  const event = req.body;
+  const event = req.body.data || req.body;
 
   console.log('🚨 Webhook HIT');
   console.log('📞 Incoming TexML event:', JSON.stringify(event, null, 2));
 
-  // Respond to call.initiated or first ringing event
-  if (
-    event.event_type === 'call.initiated' ||
-    (event.CallbackSource === 'call-progress-events' && event.CallStatus === 'ringing')
-  ) {
-    const caller = event.From || 'unknown';
+  const callId = event.CallSid || event.CallControlId;
 
+  // Only respond once per call
+  if (callId && answeredCalls.has(callId)) {
+    return res.sendStatus(200);
+  }
+
+  // Detect incoming call: either initiated or ringing
+  const isIncomingCall =
+    event.event_type === 'call.initiated' ||
+    (event.CallbackSource === 'call-progress-events' && event.CallStatus === 'ringing');
+
+  if (isIncomingCall) {
+    const caller = event.From || event.payload?.from || 'unknown';
+    answeredCalls.add(callId);
+
+    // TexML response: TTS + connect to your SIP endpoint
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Speak voice="alloy" language="en-US">
@@ -32,12 +44,15 @@ app.post('/texml-webhook', (req, res) => {
   </Connect>
 </Response>`;
 
+    console.log('🎤 TexML being sent:');
+    console.log(texmlResponse);
+
     res.set('Content-Type', 'text/xml');
     res.send(texmlResponse);
 
     console.log(`✅ TexML sent to answer and connect caller ${caller}`);
   } else {
-    // For all other events, respond 200 OK
+    // Respond 200 for all other events
     res.sendStatus(200);
   }
 });
