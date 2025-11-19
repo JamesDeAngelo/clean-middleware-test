@@ -7,9 +7,22 @@
   },
   "dependencies": {
     "airtable": "^0.12.2",
-    "axios": "^1.12.2",
-    "body-parser": "^1.20.2",
+    "axios": "^1.13.2",
+    "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2"
-  }
+  },
+  "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JamesDeAngelo/clean-middleware-test.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/JamesDeAngelo/clean-middleware-test/issues"
+  },
+  "homepage": "https://github.com/JamesDeAngelo/clean-middleware-test#readme"
 }
