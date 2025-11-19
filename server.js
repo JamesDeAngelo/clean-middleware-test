@@ -10,63 +10,50 @@ app.use(express.json());
 app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Airtable (optional - only if you have it set up)
+// Initialize Airtable (optional)
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
     .base(process.env.AIRTABLE_BASE_ID);
 }
 
-// Store call context in memory (upgrade to Redis later for production)
-const callContext = new Map();
+// Store call sessions (maps CallSid to Voiceflow user_id)
+const callSessions = new Map();
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('🚀 AI Voice Agent Running! Endpoints: /texml-webhook');
+  res.send('🚀 Voiceflow Voice Agent Running!');
 });
 
-// Initial webhook - greet caller and ask for name
-app.post('/texml-webhook', (req, res) => {
+// Initial webhook - start Voiceflow conversation
+app.post('/texml-webhook', async (req, res) => {
   try {
     console.log('========================================');
-    console.log('📞 INITIAL WEBHOOK RECEIVED');
+    console.log('📞 NEW CALL RECEIVED');
     console.log('========================================');
-    console.log('Full request body:', JSON.stringify(req.body, null, 2));
     
     const callSid = req.body.CallSid;
     const callerPhone = req.body.From;
     
-    console.log(`📱 Caller: ${callerPhone}`);
+    console.log(`📱 From: ${callerPhone}`);
     console.log(`🆔 Call SID: ${callSid}`);
     
-    // Initialize call context
-    callContext.set(callSid, {
+    // Create a unique user ID for this call (use phone number or CallSid)
+    const userId = callerPhone.replace('+', ''); // Remove + from phone number
+    callSessions.set(callSid, {
+      userId: userId,
       phone: callerPhone,
-      startTime: new Date().toISOString(),
-      name: null,
-      accidentDetails: null
+      startTime: new Date().toISOString()
     });
     
-    console.log('💾 Context initialized');
+    // Launch Voiceflow conversation (this triggers the "Start" block)
+    const voiceflowResponse = await sendToVoiceflow(userId, { type: 'launch' });
     
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="woman" language="en-US">
-    Hello! Thank you for calling. This is your A I legal assistant for truck accident cases. I'm here to help gather information about your situation.
-  </Say>
-  <Pause length="1"/>
-  <Say voice="woman" language="en-US">
-    Can you please tell me your full name?
-  </Say>
-  <Record 
-    action="/process-name" 
-    method="POST" 
-    maxLength="10" 
-    timeout="3"
-    playBeep="false"
-  />
-</Response>`;
-
+    console.log('🤖 Voiceflow initial response:', voiceflowResponse);
+    
+    // Build TeXML response from Voiceflow
+    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
+    
     console.log('✅ Sending TeXML response');
     console.log('========================================');
     
@@ -74,65 +61,70 @@ app.post('/texml-webhook', (req, res) => {
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ ERROR IN INITIAL WEBHOOK:', error);
-    res.status(500).send('Error processing webhook');
+    console.error('❌ Error:', error);
+    
+    // Fallback response
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="woman">Sorry, there was an error. Please try again later.</Say>
+  <Hangup/>
+</Response>`;
+    
+    res.type('application/xml');
+    res.send(texmlResponse);
   }
 });
 
-// Process name recording
-app.post('/process-name', async (req, res) => {
+// Handle user speech input
+app.post('/process-speech', async (req, res) => {
   try {
-    console.log('🎙️ Name recording received');
+    console.log('========================================');
+    console.log('🎤 SPEECH INPUT RECEIVED');
+    console.log('========================================');
     
     const recordingUrl = req.body.RecordingUrl;
     const callSid = req.body.CallSid;
     
-    if (!recordingUrl) {
-      throw new Error('No recording URL provided');
+    const session = callSessions.get(callSid);
+    if (!session) {
+      throw new Error('Session not found');
     }
     
+    console.log(`🎧 Transcribing audio...`);
+    
     // Transcribe with Whisper
-    const name = await transcribeWithWhisper(recordingUrl);
-    console.log(`✅ Caller name: "${name}"`);
+    const userInput = await transcribeWithWhisper(recordingUrl);
+    console.log(`✅ User said: "${userInput}"`);
     
-    // Store in context
-    const context = callContext.get(callSid) || {};
-    context.name = name;
-    callContext.set(callSid, context);
+    // Send to Voiceflow
+    const voiceflowResponse = await sendToVoiceflow(session.userId, {
+      type: 'text',
+      payload: userInput
+    });
     
-    // Ask about accident
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="woman" language="en-US">
-    Thank you, ${sanitizeForSpeech(name)}. Now, can you please describe what happened in your truck accident? Please include when it occurred and any important details.
-  </Say>
-  <Pause length="1"/>
-  <Record 
-    action="/process-accident" 
-    method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
-  />
-</Response>`;
-
+    console.log('🤖 Voiceflow response:', voiceflowResponse);
+    
+    // Build TeXML response
+    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
+    
+    console.log('✅ Sending TeXML response');
+    console.log('========================================');
+    
     res.type('application/xml');
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ Error processing name:', error);
+    console.error('❌ Error:', error);
     
-    // Fallback without personalization
+    // Ask them to repeat
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="woman" language="en-US">
-    Thank you. Now, can you please describe what happened in your accident?
-  </Say>
+  <Say voice="woman">Sorry, I didn't catch that. Could you please repeat?</Say>
   <Record 
-    action="/process-accident" 
+    action="/process-speech" 
     method="POST" 
     maxLength="60" 
-    timeout="4"
+    timeout="3"
     playBeep="false"
   />
 </Response>`;
@@ -142,94 +134,73 @@ app.post('/process-name', async (req, res) => {
   }
 });
 
-// Process accident details
-app.post('/process-accident', async (req, res) => {
+// Send message to Voiceflow API
+async function sendToVoiceflow(userId, action) {
   try {
-    console.log('📋 Accident recording received');
+    const response = await axios.post(
+      `https://general-runtime.voiceflow.com/state/user/${userId}/interact`,
+      { action: action },
+      {
+        headers: {
+          'Authorization': process.env.VOICEFLOW_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
     
-    const recordingUrl = req.body.RecordingUrl;
-    const callSid = req.body.CallSid;
-    const callerPhone = req.body.From;
+    return response.data;
     
-    if (!recordingUrl) {
-      throw new Error('No recording URL provided');
-    }
-    
-    // Transcribe accident details
-    const accidentDetails = await transcribeWithWhisper(recordingUrl);
-    console.log(`✅ Accident details: "${accidentDetails}"`);
-    
-    // Get full context
-    const context = callContext.get(callSid) || {};
-    context.accidentDetails = accidentDetails;
-    context.endTime = new Date().toISOString();
-    
-    // Store in Airtable if configured
-    if (airtableBase) {
-      try {
-        await airtableBase('Leads').create({
-          "Caller Name": context.name || 'Unknown',
-          "Phone Number": callerPhone,
-          "Accident Details": accidentDetails,
-          "Call SID": callSid,
-          "Call Start": context.startTime,
-          "Qualified": determineQualification(accidentDetails),
-          "Status": "New"
-        });
-        console.log('✅ Saved to Airtable');
-      } catch (airtableError) {
-        console.error('⚠️ Airtable error:', airtableError.message);
+  } catch (error) {
+    console.error('❌ Voiceflow API error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
+// Build TeXML from Voiceflow response
+function buildTexmlFromVoiceflow(voiceflowData) {
+  let texmlParts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>'];
+  
+  // Voiceflow returns an array of trace objects
+  for (const trace of voiceflowData) {
+    if (trace.type === 'text' || trace.type === 'speak') {
+      // Voiceflow text/speak block
+      const text = trace.payload?.message || trace.payload?.text || '';
+      if (text) {
+        texmlParts.push(`  <Say voice="woman" language="en-US">${sanitizeForSpeech(text)}</Say>`);
+        texmlParts.push(`  <Pause length="1"/>`);
       }
     }
     
-    // Clean up context
-    callContext.delete(callSid);
-    
-    // Thank and hang up
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="woman" language="en-US">
-    Thank you so much for sharing that information. I've recorded all the details about your case. A qualified truck accident attorney will review your information and contact you within 24 hours at the phone number you're calling from.
-  </Say>
-  <Pause length="1"/>
-  <Say voice="woman" language="en-US">
-    If you need to speak with someone urgently, please call us back anytime. Have a great day, and take care!
-  </Say>
-  <Hangup/>
-</Response>`;
-
-    res.type('application/xml');
-    res.send(texmlResponse);
-    
-  } catch (error) {
-    console.error('❌ Error processing accident:', error);
-    
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="woman" language="en-US">
-    Thank you for the information. A lawyer will contact you soon. Goodbye!
-  </Say>
-  <Hangup/>
-</Response>`;
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
+    if (trace.type === 'end') {
+      // End of conversation
+      texmlParts.push(`  <Hangup/>`);
+      return texmlParts.join('\n') + '\n</Response>';
+    }
   }
-});
+  
+  // If no "end" trace, wait for user input
+  texmlParts.push(`  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="3"
+    playBeep="false"
+  />`);
+  
+  texmlParts.push('</Response>');
+  return texmlParts.join('\n');
+}
 
 // Transcribe audio with OpenAI Whisper
 async function transcribeWithWhisper(audioUrl) {
   try {
-    console.log(`🎧 Downloading audio from: ${audioUrl.substring(0, 80)}...`);
-    
-    // Download audio file
+    // Download audio
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
-      timeout: 30000 // 30 second timeout
+      timeout: 30000
     });
     
     const audioBuffer = Buffer.from(audioResponse.data);
-    console.log(`📦 Audio downloaded: ${audioBuffer.length} bytes`);
     
     // Prepare form data
     const formData = new FormData();
@@ -253,10 +224,7 @@ async function transcribeWithWhisper(audioUrl) {
       }
     );
     
-    const transcription = response.data.text.trim();
-    console.log(`✅ Transcription successful: ${transcription.length} chars`);
-    
-    return transcription;
+    return response.data.text.trim();
     
   } catch (error) {
     console.error('❌ Whisper error:', error.response?.data || error.message);
@@ -264,27 +232,23 @@ async function transcribeWithWhisper(audioUrl) {
   }
 }
 
-// Determine if lead is qualified (simple logic - enhance later)
-function determineQualification(details) {
-  const keywords = ['truck', 'semi', '18 wheeler', 'tractor trailer', 'commercial vehicle', 'injury', 'injured'];
-  const lowerDetails = details.toLowerCase();
-  
-  const hasKeyword = keywords.some(keyword => lowerDetails.includes(keyword));
-  return hasKeyword ? 'Yes' : 'Maybe';
-}
-
-// Sanitize text for speech (remove special chars that might confuse TTS)
+// Sanitize text for speech
 function sanitizeForSpeech(text) {
   return text
-    .replace(/[<>]/g, '') // Remove XML chars
-    .substring(0, 100); // Limit length
+    .replace(/[<>]/g, '')
+    .replace(/&/g, 'and')
+    .substring(0, 500);
 }
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log('========================================');
+  console.log('🚀 VOICEFLOW VOICE AGENT STARTED');
+  console.log('========================================');
+  console.log(`📡 Port: ${PORT}`);
   console.log(`📞 Webhook: /texml-webhook`);
-  console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing'}`);
-  console.log(`📊 Airtable: ${airtableBase ? '✅ Connected' : '⚠️ Not configured'}`);
+  console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
+  console.log(`🤖 Voiceflow: ${process.env.VOICEFLOW_API_KEY ? '✅' : '❌'}`);
+  console.log('========================================');
 });
