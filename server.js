@@ -92,17 +92,27 @@ app.post('/process-speech', async (req, res) => {
     
     console.log(`🎧 Transcribing audio...`);
     
-    // Transcribe with Whisper
-    const userInput = await transcribeWithWhisper(recordingUrl);
-    console.log(`✅ User said: "${userInput}"`);
+    let userInput;
+    try {
+      // Transcribe with Whisper
+      userInput = await transcribeWithWhisper(recordingUrl);
+      console.log(`✅ User said: "${userInput}"`);
+    } catch (transcriptionError) {
+      console.error('❌ Transcription failed:', transcriptionError.message);
+      
+      // Send empty/null to Voiceflow to trigger its "no reply" handler
+      // This lets Voiceflow handle the error with its own prompts
+      userInput = null;
+    }
     
-    // Send to Voiceflow
+    // Send to Voiceflow (even if transcription failed)
+    // Voiceflow will handle "no reply" or "no match" scenarios
     const voiceflowResponse = await sendToVoiceflow(session.userId, {
-      type: 'text',
-      payload: userInput
+      type: userInput ? 'text' : 'no-reply',
+      payload: userInput || ''
     });
     
-    console.log('🤖 Voiceflow response:', voiceflowResponse);
+    console.log('🤖 Voiceflow response:', JSON.stringify(voiceflowResponse, null, 2));
     
     // Build TeXML response
     const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
@@ -114,19 +124,13 @@ app.post('/process-speech', async (req, res) => {
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Critical error:', error);
     
-    // Ask them to repeat
+    // Last resort fallback only for system errors
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="woman">Sorry, I didn't catch that. Could you please repeat?</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="3"
-    playBeep="false"
-  />
+  <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
+  <Hangup/>
 </Response>`;
     
     res.type('application/xml');
