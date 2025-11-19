@@ -28,10 +28,16 @@ app.get('/', (req, res) => {
 // Initial webhook - greet caller and ask for name
 app.post('/texml-webhook', (req, res) => {
   try {
-    console.log('📞 Incoming call:', req.body);
+    console.log('========================================');
+    console.log('📞 INITIAL WEBHOOK RECEIVED');
+    console.log('========================================');
+    console.log('Full request body:', JSON.stringify(req.body, null, 2));
     
     const callSid = req.body.CallSid;
     const callerPhone = req.body.From;
+    
+    console.log(`📱 Caller: ${callerPhone}`);
+    console.log(`🆔 Call SID: ${callSid}`);
     
     // Initialize call context
     callContext.set(callSid, {
@@ -40,6 +46,8 @@ app.post('/texml-webhook', (req, res) => {
       name: null,
       accidentDetails: null
     });
+    
+    console.log('💾 Context initialized');
     
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -59,11 +67,14 @@ app.post('/texml-webhook', (req, res) => {
   />
 </Response>`;
 
+    console.log('✅ Sending TeXML response');
+    console.log('========================================');
+    
     res.type('application/xml');
     res.send(texmlResponse);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ ERROR IN INITIAL WEBHOOK:', error);
     res.status(500).send('Error processing webhook');
   }
 });
