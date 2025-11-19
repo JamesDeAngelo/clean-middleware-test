@@ -160,32 +160,45 @@ async function sendToVoiceflow(userId, action) {
 function buildTexmlFromVoiceflow(voiceflowData) {
   let texmlParts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>'];
   
+  let hasEnd = false;
+  let messageCount = 0;
+  
   // Voiceflow returns an array of trace objects
   for (const trace of voiceflowData) {
+    // Only process text/speak messages
     if (trace.type === 'text' || trace.type === 'speak') {
-      // Voiceflow text/speak block
       const text = trace.payload?.message || trace.payload?.text || '';
       if (text) {
-        texmlParts.push(`  <Say voice="woman" language="en-US">${sanitizeForSpeech(text)}</Say>`);
-        texmlParts.push(`  <Pause length="1"/>`);
+        messageCount++;
+        // Use better voice - Polly.Joanna sounds more natural than default
+        texmlParts.push(`  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(text)}</Say>`);
+        
+        // Only add pause between messages, not after the last one
+        if (messageCount < voiceflowData.filter(t => t.type === 'text' || t.type === 'speak').length) {
+          texmlParts.push(`  <Pause length="1"/>`);
+        }
       }
     }
     
+    // Check for end of conversation
     if (trace.type === 'end') {
-      // End of conversation
-      texmlParts.push(`  <Hangup/>`);
-      return texmlParts.join('\n') + '\n</Response>';
+      hasEnd = true;
     }
   }
   
-  // If no "end" trace, wait for user input
-  texmlParts.push(`  <Record 
+  if (hasEnd) {
+    // Conversation ended
+    texmlParts.push(`  <Hangup/>`);
+  } else {
+    // Wait for user input with a slightly longer timeout for natural speech
+    texmlParts.push(`  <Record 
     action="/process-speech" 
     method="POST" 
     maxLength="60" 
-    timeout="3"
+    timeout="4"
     playBeep="false"
   />`);
+  }
   
   texmlParts.push('</Response>');
   return texmlParts.join('\n');
