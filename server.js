@@ -17,15 +17,38 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
     .base(process.env.AIRTABLE_BASE_ID);
 }
 
-// Store call sessions (maps CallSid to Voiceflow user_id)
-const callSessions = new Map();
+// Store conversation history for each call
+const conversations = new Map();
+
+// System prompt - your AI's personality and logic
+const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. Your job is to collect information from callers in a friendly, professional manner.
+
+CONVERSATION FLOW:
+1. Greet caller and explain you'll ask a few questions
+2. Ask for the date of the accident
+3. Ask where the accident happened (city, state, road)
+4. Ask them to describe what happened
+5. Ask if anyone was injured
+6. Ask for their full name
+7. Ask for their phone number
+8. Thank them and let them know an attorney will contact them
+
+RULES:
+- Keep responses SHORT (1-2 sentences max)
+- If you don't understand, ask them to clarify once, then move on
+- Always confirm important details before moving to next question
+- Be empathetic and professional
+- If they've already provided info, don't ask again
+- Extract structured data as you go: accident_date, location, description, injuries, caller_name, phone
+
+When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('🚀 Voiceflow Voice Agent Running!');
+  res.send('🚀 GPT-4 Voice Agent Running!');
 });
 
-// Initial webhook - start Voiceflow conversation
+// Initial webhook - start conversation
 app.post('/texml-webhook', async (req, res) => {
   try {
     console.log('========================================');
@@ -38,23 +61,35 @@ app.post('/texml-webhook', async (req, res) => {
     console.log(`📱 From: ${callerPhone}`);
     console.log(`🆔 Call SID: ${callSid}`);
     
-    // Create a unique user ID for this call (use phone number or CallSid)
-    const userId = callerPhone.replace('+', ''); // Remove + from phone number
-    callSessions.set(callSid, {
-      userId: userId,
+    // Initialize conversation with greeting
+    const conversationHistory = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
+    ];
+    
+    conversations.set(callSid, {
+      history: conversationHistory,
       phone: callerPhone,
-      startTime: new Date().toISOString()
+      startTime: new Date().toISOString(),
+      data: {}
     });
     
-    // Launch Voiceflow conversation (this triggers the "Start" block)
-    const voiceflowResponse = await sendToVoiceflow(userId, { type: 'launch' });
-    
-    console.log('🤖 Voiceflow initial response:', voiceflowResponse);
-    
-    // Build TeXML response from Voiceflow
-    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
-    
-    console.log('✅ Sending TeXML response');
+    // Speak the greeting
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
+  <Pause length="1"/>
+  <Say voice="Polly.Joanna" language="en-US">First, can you tell me the date of the accident?</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
+  />
+</Response>`;
+
+    console.log('✅ Sending greeting');
     console.log('========================================');
     
     res.type('application/xml');
@@ -63,10 +98,9 @@ app.post('/texml-webhook', async (req, res) => {
   } catch (error) {
     console.error('❌ Error:', error);
     
-    // Fallback response
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="woman">Sorry, there was an error. Please try again later.</Say>
+  <Say voice="Polly.Joanna">Sorry, there was an error. Please try again later.</Say>
   <Hangup/>
 </Response>`;
     
@@ -85,48 +119,88 @@ app.post('/process-speech', async (req, res) => {
     const recordingUrl = req.body.RecordingUrl;
     const callSid = req.body.CallSid;
     
-    const session = callSessions.get(callSid);
-    if (!session) {
-      throw new Error('Session not found');
+    const conversation = conversations.get(callSid);
+    if (!conversation) {
+      throw new Error('Conversation not found');
     }
     
     console.log(`🎧 Transcribing audio...`);
     
     let userInput;
     try {
-      // Transcribe with Whisper
       userInput = await transcribeWithWhisper(recordingUrl);
       console.log(`✅ User said: "${userInput}"`);
     } catch (transcriptionError) {
-      console.error('❌ Transcription failed:', transcriptionError.message);
-      
-      // Send empty/null to Voiceflow to trigger its "no reply" handler
-      // This lets Voiceflow handle the error with its own prompts
-      userInput = null;
+      console.error('❌ Transcription failed');
+      userInput = "[unclear audio]";
     }
     
-    // Send to Voiceflow (even if transcription failed)
-    // Voiceflow will handle "no reply" or "no match" scenarios
-    const voiceflowResponse = await sendToVoiceflow(session.userId, {
-      type: userInput ? 'text' : 'no-reply',
-      payload: userInput || ''
+    // Add user message to history
+    conversation.history.push({
+      role: 'user',
+      content: userInput
     });
     
-    console.log('🤖 Voiceflow response:', JSON.stringify(voiceflowResponse, null, 2));
+    // Get GPT-4 response
+    const gptResponse = await getGPTResponse(conversation.history);
+    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
     
-    // Build TeXML response
-    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
+    // Add assistant message to history
+    conversation.history.push({
+      role: 'assistant',
+      content: gptResponse
+    });
     
-    console.log('✅ Sending TeXML response');
-    console.log('========================================');
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
+    // Check if conversation is complete
+    if (gptResponse.includes('CONVERSATION_COMPLETE')) {
+      console.log('✅ Conversation complete - saving to Airtable');
+      
+      // Save to Airtable
+      if (airtableBase) {
+        try {
+          await saveToAirtable(conversation);
+        } catch (err) {
+          console.error('⚠️ Airtable save failed:', err.message);
+        }
+      }
+      
+      // Clean up
+      conversations.delete(callSid);
+      
+      // Thank and hang up
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!</Say>
+  <Hangup/>
+</Response>`;
+      
+      res.type('application/xml');
+      res.send(texmlResponse);
+      
+    } else {
+      // Continue conversation
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
+  />
+</Response>`;
+      
+      console.log('✅ Continuing conversation');
+      console.log('========================================');
+      
+      res.type('application/xml');
+      res.send(texmlResponse);
+    }
     
   } catch (error) {
-    console.error('❌ Critical error:', error);
+    console.error('❌ Error:', error);
     
-    // Last resort fallback only for system errors
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
@@ -138,80 +212,36 @@ app.post('/process-speech', async (req, res) => {
   }
 });
 
-// Send message to Voiceflow API
-async function sendToVoiceflow(userId, action) {
+// Get response from GPT-4
+async function getGPTResponse(conversationHistory) {
   try {
     const response = await axios.post(
-      `https://general-runtime.voiceflow.com/state/user/${userId}/interact`,
-      { action: action },
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4',
+        messages: conversationHistory,
+        max_tokens: 150,
+        temperature: 0.7
+      },
       {
         headers: {
-          'Authorization': process.env.VOICEFLOW_API_KEY,
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
     );
     
-    return response.data;
+    return response.data.choices[0].message.content.trim();
     
   } catch (error) {
-    console.error('❌ Voiceflow API error:', error.response?.data || error.message);
+    console.error('❌ GPT-4 error:', error.response?.data || error.message);
     throw error;
   }
-}
-
-// Build TeXML from Voiceflow response
-function buildTexmlFromVoiceflow(voiceflowData) {
-  let texmlParts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>'];
-  
-  let hasEnd = false;
-  let messageCount = 0;
-  
-  // Voiceflow returns an array of trace objects
-  for (const trace of voiceflowData) {
-    // Only process text/speak messages
-    if (trace.type === 'text' || trace.type === 'speak') {
-      const text = trace.payload?.message || trace.payload?.text || '';
-      if (text) {
-        messageCount++;
-        // Use better voice - Polly.Joanna sounds more natural than default
-        texmlParts.push(`  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(text)}</Say>`);
-        
-        // Only add pause between messages, not after the last one
-        if (messageCount < voiceflowData.filter(t => t.type === 'text' || t.type === 'speak').length) {
-          texmlParts.push(`  <Pause length="1"/>`);
-        }
-      }
-    }
-    
-    // Check for end of conversation
-    if (trace.type === 'end') {
-      hasEnd = true;
-    }
-  }
-  
-  if (hasEnd) {
-    // Conversation ended
-    texmlParts.push(`  <Hangup/>`);
-  } else {
-    // Wait for user input with a slightly longer timeout for natural speech
-    texmlParts.push(`  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
-  />`);
-  }
-  
-  texmlParts.push('</Response>');
-  return texmlParts.join('\n');
 }
 
 // Transcribe audio with OpenAI Whisper
 async function transcribeWithWhisper(audioUrl) {
   try {
-    // Download audio
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
       timeout: 30000
@@ -219,7 +249,6 @@ async function transcribeWithWhisper(audioUrl) {
     
     const audioBuffer = Buffer.from(audioResponse.data);
     
-    // Prepare form data
     const formData = new FormData();
     formData.append('file', audioBuffer, {
       filename: 'recording.mp3',
@@ -228,7 +257,6 @@ async function transcribeWithWhisper(audioUrl) {
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
     
-    // Call Whisper API
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
       formData,
@@ -245,8 +273,27 @@ async function transcribeWithWhisper(audioUrl) {
     
   } catch (error) {
     console.error('❌ Whisper error:', error.response?.data || error.message);
-    throw new Error('Transcription failed');
+    throw error;
   }
+}
+
+// Save conversation to Airtable
+async function saveToAirtable(conversation) {
+  // Extract key info from conversation
+  const fullTranscript = conversation.history
+    .filter(msg => msg.role !== 'system')
+    .map(msg => `${msg.role}: ${msg.content}`)
+    .join('\n');
+  
+  await airtableBase('Leads').create({
+    "Phone Number": conversation.phone,
+    "Call Start": conversation.startTime,
+    "Full Transcript": fullTranscript,
+    "Status": "New",
+    "Qualified": "Yes" // Can add logic to determine this
+  });
+  
+  console.log('✅ Saved to Airtable');
 }
 
 // Sanitize text for speech
@@ -254,6 +301,7 @@ function sanitizeForSpeech(text) {
   return text
     .replace(/[<>]/g, '')
     .replace(/&/g, 'and')
+    .replace(/CONVERSATION_COMPLETE/g, '')
     .substring(0, 500);
 }
 
@@ -261,11 +309,11 @@ function sanitizeForSpeech(text) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('========================================');
-  console.log('🚀 VOICEFLOW VOICE AGENT STARTED');
+  console.log('🚀 GPT-4 VOICE AGENT STARTED');
   console.log('========================================');
   console.log(`📡 Port: ${PORT}`);
   console.log(`📞 Webhook: /texml-webhook`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
-  console.log(`🤖 Voiceflow: ${process.env.VOICEFLOW_API_KEY ? '✅' : '❌'}`);
+  console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
 });
