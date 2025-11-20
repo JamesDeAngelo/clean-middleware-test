@@ -211,17 +211,16 @@ function buildTexmlFromVoiceflow(voiceflowData) {
 // Transcribe audio with OpenAI Whisper
 async function transcribeWithWhisper(audioUrl) {
   try {
-    // Download audio
+    // Download audio as a stream
     const audioResponse = await axios.get(audioUrl, { 
-      responseType: 'arraybuffer',
-      timeout: 30000
+      responseType: 'stream',
+      timeout: 30000 
     });
-    
-    const audioBuffer = Buffer.from(audioResponse.data);
     
     // Prepare form data
     const formData = new FormData();
-    formData.append('file', audioBuffer, {
+    // The stream is passed directly to the form data
+    formData.append('file', audioResponse.data, {
       filename: 'recording.mp3',
       contentType: 'audio/mpeg'
     });
