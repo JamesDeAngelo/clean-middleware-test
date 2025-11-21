@@ -11,7 +11,7 @@ app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.raw({ type: 'application/octet-stream' }));
 
-// Log ALL incoming requests
+// Log ALL incoming requests for debugging
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   console.log(`\n[${timestamp}] ========================================`);
@@ -133,9 +133,10 @@ app.post('/texml-webhook', async (req, res) => {
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
       
@@ -170,9 +171,10 @@ app.post('/texml-webhook', async (req, res) => {
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
     
@@ -213,6 +215,8 @@ app.post('/texml-webhook', async (req, res) => {
 
 // Handle user speech input
 app.post('/process-speech', async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     console.log('========================================');
     console.log('🎤 /process-speech ENDPOINT HIT');
@@ -251,73 +255,58 @@ app.post('/process-speech', async (req, res) => {
     
     const currentConversation = conversations.get(callSid);
     
-    if (!recordingUrl) {
-      console.warn('⚠️ No recording URL provided, using placeholder');
-      // Continue with empty input
-      const gptResponse = await getGPTResponse(currentConversation.history);
-      currentConversation.history.push({ role: 'user', content: '[no audio]' });
-      currentConversation.history.push({ role: 'assistant', content: gptResponse });
+    // Send response immediately, then process in background
+    // This allows Telynx to start preparing while we process
+    let userInput = "[processing...]";
+    let gptResponse = "Thank you. Let me process that.";
+    
+    // Process transcription and GPT in parallel for speed
+    const processPromise = (async () => {
+      if (!recordingUrl) {
+        console.warn('⚠️ No recording URL provided, using placeholder');
+        userInput = '[no audio]';
+      } else {
+        console.log(`🎧 Transcribing audio...`);
+        try {
+          userInput = await transcribeWithWhisper(recordingUrl);
+          console.log(`✅ User said: "${userInput}"`);
+        } catch (transcriptionError) {
+          console.error('❌ Transcription failed:', transcriptionError.message);
+          userInput = "[unclear audio]";
+        }
+      }
       
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
-  />
-</Response>`;
+      // Add user message to history
+      currentConversation.history.push({
+        role: 'user',
+        content: userInput
+      });
       
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-      return;
-    }
+      // Get GPT-4 response (using faster model)
+      gptResponse = await getGPTResponse(currentConversation.history);
+      console.log(`🤖 GPT-4 said: "${gptResponse}"`);
+      
+      // Add assistant message to history
+      currentConversation.history.push({
+        role: 'assistant',
+        content: gptResponse
+      });
+    })();
     
-    console.log(`🎧 Transcribing audio...`);
+    // Check if conversation is complete (but don't wait for processing)
+    const isComplete = gptResponse.includes('CONVERSATION_COMPLETE');
     
-    let userInput;
-    try {
-      userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}"`);
-    } catch (transcriptionError) {
-      console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
-      userInput = "[unclear audio]";
-    }
-    
-    // Add user message to history
-    currentConversation.history.push({
-      role: 'user',
-      content: userInput
-    });
-    
-    // Get GPT-4 response
-    const gptResponse = await getGPTResponse(currentConversation.history);
-    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
-    
-    // Add assistant message to history
-    currentConversation.history.push({
-      role: 'assistant',
-      content: gptResponse
-    });
-    
-    // Check if conversation is complete
-    if (gptResponse.includes('CONVERSATION_COMPLETE')) {
+    if (isComplete) {
+      // Wait for processing to complete before saving
+      await processPromise;
+      
       console.log('✅ Conversation complete - saving to Airtable');
       
-      // Save to Airtable
+      // Save to Airtable (don't wait - do in background)
       if (airtableBase) {
-        try {
-          await saveToAirtable(currentConversation);
-        } catch (err) {
+        saveToAirtable(currentConversation).catch(err => {
           console.error('⚠️ Airtable save failed:', err.message);
-          console.error('Airtable error stack:', err.stack);
-        }
-      } else {
-        console.log('⚠️ Airtable not configured, skipping save');
+        });
       }
       
       // Clean up
@@ -334,26 +323,39 @@ app.post('/process-speech', async (req, res) => {
       res.status(200);
       res.send(texmlResponse);
       
+      const elapsed = Date.now() - startTime;
+      console.log(`⏱️ Total processing time: ${elapsed}ms`);
+      
     } else {
-      // Continue conversation
+      // Send immediate response with a short pause, then continue
+      // This gives time for processing while keeping the call active
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Pause length="1"/>
   <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
-      
-      console.log('✅ Continuing conversation');
-      console.log('========================================');
       
       res.type('application/xml');
       res.status(200);
       res.send(texmlResponse);
+      
+      // Process in background and update conversation
+      processPromise.catch(err => {
+        console.error('❌ Background processing error:', err);
+      });
+      
+      const elapsed = Date.now() - startTime;
+      console.log(`⏱️ Response sent in: ${elapsed}ms`);
+      console.log('✅ Continuing conversation');
+      console.log('========================================');
     }
     
   } catch (error) {
@@ -381,20 +383,25 @@ app.post('/process-speech', async (req, res) => {
   }
 });
 
-// Get response from GPT-4
+// Get response from GPT-4 (using faster model)
 async function getGPTResponse(conversationHistory) {
   try {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY environment variable is not set');
     }
     
-    console.log('🤖 Calling GPT-4 API...');
+    console.log('🤖 Calling GPT API...');
+    
+    // Use GPT-3.5-turbo for MUCH faster responses (2-3x faster than GPT-4)
+    // Still very capable for this use case
+    const model = process.env.USE_GPT4 === 'true' ? 'gpt-4' : 'gpt-3.5-turbo';
+    
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4',
+        model: model,
         messages: conversationHistory,
-        max_tokens: 150,
+        max_tokens: 100, // Reduced from 150 for faster responses
         temperature: 0.7
       },
       {
@@ -402,28 +409,28 @@ async function getGPTResponse(conversationHistory) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 30000
+        timeout: 20000 // Reduced timeout to 20s
       }
     );
     
     const content = response.data.choices[0].message.content.trim();
-    console.log('✅ GPT-4 response received');
+    console.log(`✅ GPT response received (model: ${model})`);
     return content;
     
   } catch (error) {
-    console.error('❌ GPT-4 error:', error.response?.data || error.message);
+    console.error('❌ GPT error:', error.response?.data || error.message);
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
     }
     if (error.stack) {
-      console.error('GPT-4 error stack:', error.stack);
+      console.error('GPT error stack:', error.stack);
     }
     throw error;
   }
 }
 
-// Transcribe audio with OpenAI Whisper
+// Transcribe audio with OpenAI Whisper (optimized for speed)
 async function transcribeWithWhisper(audioUrl) {
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -432,9 +439,10 @@ async function transcribeWithWhisper(audioUrl) {
     
     console.log(`📥 Downloading audio from: ${audioUrl}`);
     
+    // Use shorter timeout for faster failure recovery
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
-      timeout: 30000
+      timeout: 15000 // Reduced from 30s to 15s
     });
     
     const audioBuffer = Buffer.from(audioResponse.data);
@@ -447,6 +455,7 @@ async function transcribeWithWhisper(audioUrl) {
     });
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
+    formData.append('response_format', 'text'); // Faster than JSON
     
     console.log(`🎤 Sending to Whisper API...`);
     
@@ -458,12 +467,17 @@ async function transcribeWithWhisper(audioUrl) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        timeout: 30000
+        timeout: 20000 // Reduced from 30s to 20s
       }
     );
     
+    // Handle text response format
+    const transcription = typeof response.data === 'string' 
+      ? response.data.trim() 
+      : response.data.text.trim();
+    
     console.log('✅ Transcription received');
-    return response.data.text.trim();
+    return transcription;
     
   } catch (error) {
     console.error('❌ Whisper error:', error.response?.data || error.message);
@@ -549,6 +563,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
+  console.log(`⚡ Using model: ${process.env.USE_GPT4 === 'true' ? 'GPT-4' : 'GPT-3.5-turbo (faster)'}`);
   console.log('========================================');
   console.log('✅ Server is ready to receive requests');
   console.log('========================================');
