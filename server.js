@@ -10,11 +10,25 @@ app.use(express.json());
 app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
 
+// Log all incoming requests for debugging
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  if (Object.keys(req.body).length > 0) {
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+  }
+  next();
+});
+
 // Initialize Airtable (optional)
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
-  airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
-    .base(process.env.AIRTABLE_BASE_ID);
+  try {
+    airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
+      .base(process.env.AIRTABLE_BASE_ID);
+    console.log('✅ Airtable initialized');
+  } catch (error) {
+    console.error('❌ Airtable initialization failed:', error.message);
+  }
 }
 
 // Store conversation history for each call
@@ -69,12 +83,29 @@ app.post('/texml-webhook', async (req, res) => {
     console.log('📞 NEW CALL RECEIVED');
     console.log('========================================');
     
-    const callSid = req.body.CallSid;
+    const callSid = req.body.CallSid || req.body.CallSidLegacy;
     const callerPhone = req.body.From;
+    const callbackSource = req.body.CallbackSource;
+    
+    // Ignore call-cost-events callbacks
+    if (callbackSource === 'call-cost-events') {
+      console.log('⚠️ Ignoring call-cost-events callback');
+      res.type('application/xml');
+      res.status(200);
+      res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+      return;
+    }
+    
+    if (!callSid) {
+      console.error('❌ No CallSid found in request');
+      res.type('application/xml');
+      res.status(200);
+      res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Error: No call ID received.</Say><Hangup/></Response>');
+      return;
+    }
     
     console.log(`📱 From: ${callerPhone}`);
     console.log(`🆔 Call SID: ${callSid}`);
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
     // Initialize conversation with greeting
     const conversationHistory = [
@@ -103,24 +134,35 @@ app.post('/texml-webhook', async (req, res) => {
     playBeep="false"
   />
 </Response>`;
+    
     console.log('✅ Sending greeting');
+    console.log('Response XML length:', texmlResponse.length);
     console.log('========================================');
     
     res.type('application/xml');
+    res.status(200);
     res.send(texmlResponse);
+    console.log('✅ Response sent successfully');
     
   } catch (error) {
     console.error('❌ Error in /texml-webhook:', error);
+    console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
     
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+    try {
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Sorry, there was an error. Please try again later.</Say>
   <Hangup/>
 </Response>`;
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+    } catch (sendError) {
+      console.error('❌ Failed to send error response:', sendError);
+      res.status(500).send('Internal Server Error');
+    }
   }
 });
 
@@ -132,17 +174,46 @@ app.post('/process-speech', async (req, res) => {
     console.log('========================================');
     
     const recordingUrl = req.body.RecordingUrl;
-    const callSid = req.body.CallSid;
+    const callSid = req.body.CallSid || req.body.CallSidLegacy;
     
     console.log(`📞 Call SID: ${callSid}`);
     console.log(`🎧 Recording URL: ${recordingUrl}`);
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
+    if (!callSid) {
+      console.error('❌ No CallSid in request');
+      throw new Error('No CallSid in request');
+    }
     
     const conversation = conversations.get(callSid);
     if (!conversation) {
       console.error('❌ Conversation not found for CallSid:', callSid);
-      console.error('Available conversations:', Array.from(conversations.keys()));
+      console.log('Available conversations:', Array.from(conversations.keys()));
       throw new Error('Conversation not found');
+    }
+    
+    if (!recordingUrl) {
+      console.warn('⚠️ No recording URL provided, using placeholder');
+      // Continue with empty input
+      const gptResponse = await getGPTResponse(conversation.history);
+      conversation.history.push({ role: 'user', content: '[no audio]' });
+      conversation.history.push({ role: 'assistant', content: gptResponse });
+      
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
+  />
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+      return;
     }
     
     console.log(`🎧 Transcribing audio...`);
@@ -200,6 +271,7 @@ app.post('/process-speech', async (req, res) => {
 </Response>`;
       
       res.type('application/xml');
+      res.status(200);
       res.send(texmlResponse);
       
     } else {
@@ -220,21 +292,29 @@ app.post('/process-speech', async (req, res) => {
       console.log('========================================');
       
       res.type('application/xml');
+      res.status(200);
       res.send(texmlResponse);
     }
     
   } catch (error) {
     console.error('❌ Error in /process-speech:', error);
+    console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
     
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+    try {
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
   <Hangup/>
 </Response>`;
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+    } catch (sendError) {
+      console.error('❌ Failed to send error response:', sendError);
+      res.status(500).send('Internal Server Error');
+    }
   }
 });
 
@@ -242,13 +322,10 @@ app.post('/process-speech', async (req, res) => {
 async function getGPTResponse(conversationHistory) {
   try {
     if (!process.env.OPENAI_API_KEY) {
-      const error = new Error('OPENAI_API_KEY environment variable is not set');
-      console.error('❌', error.message);
-      throw error;
+      throw new Error('OPENAI_API_KEY environment variable is not set');
     }
     
     console.log('🤖 Calling GPT-4 API...');
-    
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
@@ -266,13 +343,18 @@ async function getGPTResponse(conversationHistory) {
       }
     );
     
-    return response.data.choices[0].message.content.trim();
+    const content = response.data.choices[0].message.content.trim();
+    console.log('✅ GPT-4 response received');
+    return content;
     
   } catch (error) {
     console.error('❌ GPT-4 error:', error.response?.data || error.message);
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
+    if (error.stack) {
+      console.error('GPT-4 error stack:', error.stack);
     }
     throw error;
   }
@@ -282,13 +364,7 @@ async function getGPTResponse(conversationHistory) {
 async function transcribeWithWhisper(audioUrl) {
   try {
     if (!process.env.OPENAI_API_KEY) {
-      const error = new Error('OPENAI_API_KEY environment variable is not set');
-      console.error('❌', error.message);
-      throw error;
-    }
-    
-    if (!audioUrl) {
-      throw new Error('RecordingUrl is missing from request');
+      throw new Error('OPENAI_API_KEY environment variable is not set');
     }
     
     console.log(`📥 Downloading audio from: ${audioUrl}`);
@@ -323,7 +399,7 @@ async function transcribeWithWhisper(audioUrl) {
       }
     );
     
-    console.log('✅ Transcription successful');
+    console.log('✅ Transcription received');
     return response.data.text.trim();
     
   } catch (error) {
@@ -331,6 +407,9 @@ async function transcribeWithWhisper(audioUrl) {
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
+    if (error.stack) {
+      console.error('Whisper error stack:', error.stack);
     }
     throw error;
   }
@@ -356,6 +435,9 @@ async function saveToAirtable(conversation) {
     console.log('✅ Saved to Airtable');
   } catch (error) {
     console.error('❌ Airtable save error:', error.message);
+    if (error.stack) {
+      console.error('Airtable error stack:', error.stack);
+    }
     throw error;
   }
 }
@@ -371,9 +453,23 @@ function sanitizeForSpeech(text) {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Unhandled error middleware:', err);
+  console.error('========================================');
+  console.error('❌ UNHANDLED ERROR MIDDLEWARE');
+  console.error('========================================');
+  console.error('Error:', err);
   console.error('Stack:', err.stack);
-  res.status(500).send('Internal Server Error');
+  console.error('Request path:', req.path);
+  console.error('Request method:', req.method);
+  console.error('========================================');
+  
+  try {
+    res.type('application/xml');
+    res.status(200);
+    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">An error occurred. Goodbye.</Say><Hangup/></Response>');
+  } catch (sendError) {
+    console.error('❌ Failed to send error response:', sendError);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
 // Start server
@@ -386,7 +482,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 Listening on: 0.0.0.0:${PORT}`);
   console.log(`📞 Webhook: /texml-webhook`);
-  console.log(`🎤 Process Speech: /process-speech`);
+  console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
@@ -400,6 +496,7 @@ process.on('uncaughtException', (error) => {
   console.error('Error:', error);
   console.error('Stack:', error.stack);
   console.error('========================================');
+  // Don't exit - let the process continue
 });
 
 process.on('unhandledRejection', (reason, promise) => {
