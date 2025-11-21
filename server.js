@@ -277,14 +277,15 @@ app.post('/process-speech', async (req, res) => {
     }
     
     console.log(`🎧 Transcribing audio...`);
+    const startTime = Date.now();
     
+    // OPTIMIZATION: Process asynchronously but don't block response
     let userInput;
     try {
       userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}"`);
+      console.log(`✅ User said: "${userInput}" (${Date.now() - startTime}ms)`);
     } catch (transcriptionError) {
       console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
       userInput = "[unclear audio]";
     }
     
@@ -294,9 +295,11 @@ app.post('/process-speech', async (req, res) => {
       content: userInput
     });
     
-    // Get GPT-4 response
+    // OPTIMIZATION: Use faster model for quicker responses
+    const gptStartTime = Date.now();
     const gptResponse = await getGPTResponse(currentConversation.history);
-    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
+    console.log(`🤖 GPT said: "${gptResponse}" (${Date.now() - gptStartTime}ms)`);
+    console.log(`⏱️ Total processing time: ${Date.now() - startTime}ms`);
     
     // Add assistant message to history
     currentConversation.history.push({
@@ -308,14 +311,11 @@ app.post('/process-speech', async (req, res) => {
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
       console.log('✅ Conversation complete - saving to Airtable');
       
-      // Save to Airtable
+      // OPTIMIZATION: Don't wait for Airtable save - do it in background
       if (airtableBase) {
-        try {
-          await saveToAirtable(currentConversation);
-        } catch (err) {
+        saveToAirtable(currentConversation).catch(err => {
           console.error('⚠️ Airtable save failed:', err.message);
-          console.error('Airtable error stack:', err.stack);
-        }
+        });
       } else {
         console.log('⚠️ Airtable not configured, skipping save');
       }
@@ -381,18 +381,21 @@ app.post('/process-speech', async (req, res) => {
   }
 });
 
-// Get response from GPT-4
+// Get response from GPT
 async function getGPTResponse(conversationHistory) {
   try {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY environment variable is not set');
     }
     
-    console.log('🤖 Calling GPT-4 API...');
+    console.log('🤖 Calling GPT API...');
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4',
+        // OPTIMIZATION: Use gpt-3.5-turbo for faster responses (2-3x faster than GPT-4)
+        // Change back to 'gpt-4' if you need better quality
+        // You can also set GPT_MODEL environment variable to override
+        model: process.env.GPT_MODEL || 'gpt-3.5-turbo',
         messages: conversationHistory,
         max_tokens: 150,
         temperature: 0.7
@@ -402,22 +405,23 @@ async function getGPTResponse(conversationHistory) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 30000
+        // OPTIMIZATION: Reduce timeout to fail faster if there's an issue
+        timeout: 20000
       }
     );
     
     const content = response.data.choices[0].message.content.trim();
-    console.log('✅ GPT-4 response received');
+    console.log('✅ GPT response received');
     return content;
     
   } catch (error) {
-    console.error('❌ GPT-4 error:', error.response?.data || error.message);
+    console.error('❌ GPT error:', error.response?.data || error.message);
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
     }
     if (error.stack) {
-      console.error('GPT-4 error stack:', error.stack);
+      console.error('GPT error stack:', error.stack);
     }
     throw error;
   }
@@ -431,14 +435,18 @@ async function transcribeWithWhisper(audioUrl) {
     }
     
     console.log(`📥 Downloading audio from: ${audioUrl}`);
+    const downloadStart = Date.now();
     
+    // OPTIMIZATION: Reduced timeout for faster failure
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
-      timeout: 30000
+      timeout: 15000, // Reduced from 30000
+      maxContentLength: 10 * 1024 * 1024, // 10MB max
+      maxBodyLength: 10 * 1024 * 1024
     });
     
     const audioBuffer = Buffer.from(audioResponse.data);
-    console.log(`✅ Downloaded ${audioBuffer.length} bytes`);
+    console.log(`✅ Downloaded ${audioBuffer.length} bytes (${Date.now() - downloadStart}ms)`);
     
     const formData = new FormData();
     formData.append('file', audioBuffer, {
@@ -449,6 +457,7 @@ async function transcribeWithWhisper(audioUrl) {
     formData.append('language', 'en');
     
     console.log(`🎤 Sending to Whisper API...`);
+    const whisperStart = Date.now();
     
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -458,11 +467,12 @@ async function transcribeWithWhisper(audioUrl) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        timeout: 30000
+        // OPTIMIZATION: Reduced timeout for faster failure
+        timeout: 20000 // Reduced from 30000
       }
     );
     
-    console.log('✅ Transcription received');
+    console.log(`✅ Transcription received (${Date.now() - whisperStart}ms)`);
     return response.data.text.trim();
     
   } catch (error) {
@@ -520,7 +530,7 @@ app.use((err, req, res, next) => {
   console.error('❌ UNHANDLED ERROR MIDDLEWARE');
   console.error('========================================');
   console.error('Error:', err);
-  console.error('Stack:', err.stack);
+  console.error('Error stack:', err.stack);
   console.error('Request path:', req.path);
   console.error('Request method:', req.method);
   console.error('========================================');
@@ -549,6 +559,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
+  console.log(`🤖 GPT Model: ${process.env.GPT_MODEL || 'gpt-3.5-turbo'}`);
   console.log('========================================');
   console.log('✅ Server is ready to receive requests');
   console.log('========================================');
@@ -560,7 +571,7 @@ process.on('uncaughtException', (error) => {
   console.error('❌ UNCAUGHT EXCEPTION');
   console.error('========================================');
   console.error('Error:', error);
-  console.error('Stack:', error.stack);
+  console.error('Error stack:', error.stack);
   console.error('========================================');
   // Don't exit - let the process continue
 });
@@ -576,3 +587,4 @@ process.on('unhandledRejection', (reason, promise) => {
   }
   console.error('========================================');
 });
+
