@@ -130,12 +130,12 @@ app.post('/texml-webhook', async (req, res) => {
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Hello, thank you for calling. Let me connect you.</Say>
-  <Record 
+  <Gather 
+    input="speech" 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
+    speechTimeout="auto"
+    language="en-US"
   />
 </Response>`;
       
@@ -167,12 +167,13 @@ app.post('/texml-webhook', async (req, res) => {
   <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
   <Pause length="1"/>
   <Say voice="Polly.Joanna" language="en-US">First, can you tell me the date of the accident?</Say>
-  <Record 
+  <Gather 
+    input="speech" 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
+    speechTimeout="auto"
+    language="en-US"
+    hints="date, accident, when, happened"
   />
 </Response>`;
     
@@ -218,11 +219,14 @@ app.post('/process-speech', async (req, res) => {
     console.log('🎤 /process-speech ENDPOINT HIT');
     console.log('========================================');
     
-    const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
+    // With Gather, speech results come directly in the request
+    const userInput = req.body.SpeechResult || req.query.SpeechResult || '';
     const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
+    const confidence = req.body.Confidence || req.query.Confidence;
     
     console.log(`📞 Call SID: ${callSid}`);
-    console.log(`🎧 Recording URL: ${recordingUrl}`);
+    console.log(`💬 User said: "${userInput}"`);
+    console.log(`📊 Confidence: ${confidence}`);
     
     if (!callSid) {
       console.error('❌ No CallSid in request');
@@ -250,23 +254,20 @@ app.post('/process-speech', async (req, res) => {
     }
     
     const currentConversation = conversations.get(callSid);
+    const startTime = Date.now();
     
-    if (!recordingUrl) {
-      console.warn('⚠️ No recording URL provided, using placeholder');
-      // Continue with empty input
-      const gptResponse = await getGPTResponse(currentConversation.history);
-      currentConversation.history.push({ role: 'user', content: '[no audio]' });
-      currentConversation.history.push({ role: 'assistant', content: gptResponse });
-      
+    // Handle empty input (timeout or no speech detected)
+    if (!userInput || userInput.trim() === '') {
+      console.warn('⚠️ No speech detected, asking to repeat');
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Record 
+  <Say voice="Polly.Joanna" language="en-US">I didn't catch that. Could you please repeat your answer?</Say>
+  <Gather 
+    input="speech" 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
+    speechTimeout="auto"
+    language="en-US"
   />
 </Response>`;
       
@@ -276,26 +277,13 @@ app.post('/process-speech', async (req, res) => {
       return;
     }
     
-    console.log(`🎧 Transcribing audio...`);
-    const startTime = Date.now();
-    
-    // OPTIMIZATION: Process asynchronously but don't block response
-    let userInput;
-    try {
-      userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}" (${Date.now() - startTime}ms)`);
-    } catch (transcriptionError) {
-      console.error('❌ Transcription failed:', transcriptionError.message);
-      userInput = "[unclear audio]";
-    }
-    
     // Add user message to history
     currentConversation.history.push({
       role: 'user',
-      content: userInput
+      content: userInput.trim()
     });
     
-    // OPTIMIZATION: Use faster model for quicker responses
+    // Get GPT response (much faster now - no transcription needed!)
     const gptStartTime = Date.now();
     const gptResponse = await getGPTResponse(currentConversation.history);
     console.log(`🤖 GPT said: "${gptResponse}" (${Date.now() - gptStartTime}ms)`);
@@ -311,7 +299,7 @@ app.post('/process-speech', async (req, res) => {
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
       console.log('✅ Conversation complete - saving to Airtable');
       
-      // OPTIMIZATION: Don't wait for Airtable save - do it in background
+      // Don't wait for Airtable save - do it in background
       if (airtableBase) {
         saveToAirtable(currentConversation).catch(err => {
           console.error('⚠️ Airtable save failed:', err.message);
@@ -335,16 +323,16 @@ app.post('/process-speech', async (req, res) => {
       res.send(texmlResponse);
       
     } else {
-      // Continue conversation
+      // Continue conversation - use Gather for next input
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Record 
+  <Gather 
+    input="speech" 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
+    speechTimeout="auto"
+    language="en-US"
   />
 </Response>`;
       
