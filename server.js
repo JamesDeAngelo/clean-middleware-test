@@ -5,17 +5,21 @@ const Airtable = require('airtable');
 
 const app = express();
 
-// Middleware
+// Middleware - parse all request types
 app.use(express.json());
 app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.raw({ type: 'application/octet-stream' }));
 
-// Log all incoming requests for debugging
+// Log ALL incoming requests
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  if (Object.keys(req.body).length > 0) {
-    console.log('Request body:', JSON.stringify(req.body, null, 2));
-  }
+  const timestamp = new Date().toISOString();
+  console.log(`\n[${timestamp}] ========================================`);
+  console.log(`${req.method} ${req.path}`);
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Query:', JSON.stringify(req.query, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  console.log('========================================\n');
   next();
 });
 
@@ -73,19 +77,40 @@ When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('🚀 GPT-4 Voice Agent Running!');
+  console.log('✅ Health check endpoint hit');
+  res.status(200).send('🚀 GPT-4 Voice Agent Running!');
+});
+
+// Test endpoint to verify server is working
+app.get('/test', (req, res) => {
+  console.log('✅ Test endpoint hit');
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    conversations: conversations.size,
+    openai: !!process.env.OPENAI_API_KEY,
+    airtable: !!airtableBase
+  });
 });
 
 // Initial webhook - start conversation
 app.post('/texml-webhook', async (req, res) => {
   try {
     console.log('========================================');
-    console.log('📞 NEW CALL RECEIVED');
+    console.log('📞 /texml-webhook ENDPOINT HIT');
     console.log('========================================');
     
-    const callSid = req.body.CallSid || req.body.CallSidLegacy;
-    const callerPhone = req.body.From;
-    const callbackSource = req.body.CallbackSource;
+    const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
+    const callerPhone = req.body.From || req.query.From;
+    const callbackSource = req.body.CallbackSource || req.query.CallbackSource;
+    
+    console.log('Raw request data:', {
+      body: req.body,
+      query: req.query,
+      callSid,
+      callerPhone,
+      callbackSource
+    });
     
     // Ignore call-cost-events callbacks
     if (callbackSource === 'call-cost-events') {
@@ -98,9 +123,25 @@ app.post('/texml-webhook', async (req, res) => {
     
     if (!callSid) {
       console.error('❌ No CallSid found in request');
+      console.log('Available in body:', Object.keys(req.body));
+      console.log('Available in query:', Object.keys(req.query));
+      
+      // Still send a response to keep the call alive
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Hello, thank you for calling. Let me connect you.</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
+  />
+</Response>`;
+      
       res.type('application/xml');
       res.status(200);
-      res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Error: No call ID received.</Say><Hangup/></Response>');
+      res.send(texmlResponse);
       return;
     }
     
@@ -135,19 +176,23 @@ app.post('/texml-webhook', async (req, res) => {
   />
 </Response>`;
     
-    console.log('✅ Sending greeting');
-    console.log('Response XML length:', texmlResponse.length);
-    console.log('========================================');
+    console.log('✅ Sending greeting XML response');
+    console.log('Response length:', texmlResponse.length);
     
     res.type('application/xml');
     res.status(200);
     res.send(texmlResponse);
+    
     console.log('✅ Response sent successfully');
+    console.log('========================================');
     
   } catch (error) {
-    console.error('❌ Error in /texml-webhook:', error);
+    console.error('========================================');
+    console.error('❌ ERROR in /texml-webhook');
+    console.error('========================================');
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
+    console.error('========================================');
     
     try {
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -170,11 +215,11 @@ app.post('/texml-webhook', async (req, res) => {
 app.post('/process-speech', async (req, res) => {
   try {
     console.log('========================================');
-    console.log('🎤 SPEECH INPUT RECEIVED');
+    console.log('🎤 /process-speech ENDPOINT HIT');
     console.log('========================================');
     
-    const recordingUrl = req.body.RecordingUrl;
-    const callSid = req.body.CallSid || req.body.CallSidLegacy;
+    const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
+    const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
     
     console.log(`📞 Call SID: ${callSid}`);
     console.log(`🎧 Recording URL: ${recordingUrl}`);
@@ -188,15 +233,30 @@ app.post('/process-speech', async (req, res) => {
     if (!conversation) {
       console.error('❌ Conversation not found for CallSid:', callSid);
       console.log('Available conversations:', Array.from(conversations.keys()));
-      throw new Error('Conversation not found');
+      
+      // Create a new conversation if it doesn't exist
+      console.log('⚠️ Creating new conversation for missing CallSid');
+      const conversationHistory = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
+      ];
+      
+      conversations.set(callSid, {
+        history: conversationHistory,
+        phone: req.body.From || 'unknown',
+        startTime: new Date().toISOString(),
+        data: {}
+      });
     }
+    
+    const currentConversation = conversations.get(callSid);
     
     if (!recordingUrl) {
       console.warn('⚠️ No recording URL provided, using placeholder');
       // Continue with empty input
-      const gptResponse = await getGPTResponse(conversation.history);
-      conversation.history.push({ role: 'user', content: '[no audio]' });
-      conversation.history.push({ role: 'assistant', content: gptResponse });
+      const gptResponse = await getGPTResponse(currentConversation.history);
+      currentConversation.history.push({ role: 'user', content: '[no audio]' });
+      currentConversation.history.push({ role: 'assistant', content: gptResponse });
       
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -229,17 +289,17 @@ app.post('/process-speech', async (req, res) => {
     }
     
     // Add user message to history
-    conversation.history.push({
+    currentConversation.history.push({
       role: 'user',
       content: userInput
     });
     
     // Get GPT-4 response
-    const gptResponse = await getGPTResponse(conversation.history);
+    const gptResponse = await getGPTResponse(currentConversation.history);
     console.log(`🤖 GPT-4 said: "${gptResponse}"`);
     
     // Add assistant message to history
-    conversation.history.push({
+    currentConversation.history.push({
       role: 'assistant',
       content: gptResponse
     });
@@ -251,7 +311,7 @@ app.post('/process-speech', async (req, res) => {
       // Save to Airtable
       if (airtableBase) {
         try {
-          await saveToAirtable(conversation);
+          await saveToAirtable(currentConversation);
         } catch (err) {
           console.error('⚠️ Airtable save failed:', err.message);
           console.error('Airtable error stack:', err.stack);
@@ -297,9 +357,12 @@ app.post('/process-speech', async (req, res) => {
     }
     
   } catch (error) {
-    console.error('❌ Error in /process-speech:', error);
+    console.error('========================================');
+    console.error('❌ ERROR in /process-speech');
+    console.error('========================================');
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
+    console.error('========================================');
     
     try {
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -475,6 +538,7 @@ app.use((err, req, res, next) => {
 // Start server
 const PORT = process.env.PORT || 3000;
 
+// Verify server starts
 app.listen(PORT, '0.0.0.0', () => {
   console.log('========================================');
   console.log('🚀 GPT-4 VOICE AGENT STARTED');
@@ -485,6 +549,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
+  console.log('========================================');
+  console.log('✅ Server is ready to receive requests');
   console.log('========================================');
 });
 
