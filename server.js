@@ -112,9 +112,9 @@ app.post('/texml-webhook', async (req, res) => {
       callbackSource
     });
     
-    // Ignore call-cost-events callbacks
-    if (callbackSource === 'call-cost-events') {
-      console.log('⚠️ Ignoring call-cost-events callback');
+    // Ignore call-cost-events and call-progress-events callbacks
+    if (callbackSource === 'call-cost-events' || callbackSource === 'call-progress-events') {
+      console.log(`⚠️ Ignoring ${callbackSource} callback`);
       res.type('application/xml');
       res.status(200);
       res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
@@ -130,12 +130,12 @@ app.post('/texml-webhook', async (req, res) => {
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Hello, thank you for calling. Let me connect you.</Say>
-  <Gather 
-    input="speech" 
+  <Record 
     action="/process-speech" 
     method="POST" 
-    speechTimeout="auto"
-    language="en-US"
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
   />
 </Response>`;
       
@@ -167,13 +167,12 @@ app.post('/texml-webhook', async (req, res) => {
   <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
   <Pause length="1"/>
   <Say voice="Polly.Joanna" language="en-US">First, can you tell me the date of the accident?</Say>
-  <Gather 
-    input="speech" 
+  <Record 
     action="/process-speech" 
     method="POST" 
-    speechTimeout="auto"
-    language="en-US"
-    hints="date, accident, when, happened"
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
   />
 </Response>`;
     
@@ -219,14 +218,11 @@ app.post('/process-speech', async (req, res) => {
     console.log('🎤 /process-speech ENDPOINT HIT');
     console.log('========================================');
     
-    // With Gather, speech results come directly in the request
-    const userInput = req.body.SpeechResult || req.query.SpeechResult || '';
+    const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
     const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
-    const confidence = req.body.Confidence || req.query.Confidence;
     
     console.log(`📞 Call SID: ${callSid}`);
-    console.log(`💬 User said: "${userInput}"`);
-    console.log(`📊 Confidence: ${confidence}`);
+    console.log(`🎧 Recording URL: ${recordingUrl}`);
     
     if (!callSid) {
       console.error('❌ No CallSid in request');
@@ -256,18 +252,20 @@ app.post('/process-speech', async (req, res) => {
     const currentConversation = conversations.get(callSid);
     const startTime = Date.now();
     
-    // Handle empty input (timeout or no speech detected)
-    if (!userInput || userInput.trim() === '') {
-      console.warn('⚠️ No speech detected, asking to repeat');
+    if (!recordingUrl) {
+      console.warn('⚠️ No recording URL provided yet, waiting for recording to be processed');
+      // Return immediately and let Twilio call back when recording is ready
+      // Or continue with a prompt
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna" language="en-US">I didn't catch that. Could you please repeat your answer?</Say>
-  <Gather 
-    input="speech" 
+  <Say voice="Polly.Joanna" language="en-US">Please hold while I process your response.</Say>
+  <Pause length="2"/>
+  <Record 
     action="/process-speech" 
     method="POST" 
-    speechTimeout="auto"
-    language="en-US"
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
   />
 </Response>`;
       
@@ -277,13 +275,26 @@ app.post('/process-speech', async (req, res) => {
       return;
     }
     
+    console.log(`🎧 Transcribing audio...`);
+    
+    let userInput;
+    try {
+      // Start transcription immediately without waiting
+      userInput = await transcribeWithWhisper(recordingUrl);
+      console.log(`✅ User said: "${userInput}" (${Date.now() - startTime}ms)`);
+    } catch (transcriptionError) {
+      console.error('❌ Transcription failed:', transcriptionError.message);
+      console.error('Transcription error stack:', transcriptionError.stack);
+      userInput = "[unclear audio]";
+    }
+    
     // Add user message to history
     currentConversation.history.push({
       role: 'user',
-      content: userInput.trim()
+      content: userInput
     });
     
-    // Get GPT response (much faster now - no transcription needed!)
+    // Get GPT response
     const gptStartTime = Date.now();
     const gptResponse = await getGPTResponse(currentConversation.history);
     console.log(`🤖 GPT said: "${gptResponse}" (${Date.now() - gptStartTime}ms)`);
@@ -323,16 +334,16 @@ app.post('/process-speech', async (req, res) => {
       res.send(texmlResponse);
       
     } else {
-      // Continue conversation - use Gather for next input
+      // Continue conversation
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Gather 
-    input="speech" 
+  <Record 
     action="/process-speech" 
     method="POST" 
-    speechTimeout="auto"
-    language="en-US"
+    maxLength="60" 
+    timeout="4"
+    playBeep="false"
   />
 </Response>`;
       
