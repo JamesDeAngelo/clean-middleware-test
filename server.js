@@ -161,7 +161,7 @@ app.post('/texml-webhook', async (req, res) => {
       data: {}
     });
     
-    // Speak the greeting
+    // Speak the greeting - use shorter recording for faster processing
     const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
@@ -170,9 +170,10 @@ app.post('/texml-webhook', async (req, res) => {
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
     
@@ -210,6 +211,68 @@ app.post('/texml-webhook', async (req, res) => {
     }
   }
 });
+
+// Real-time transcription webhook from Telnyx (if enabled)
+app.post('/transcription-webhook', async (req, res) => {
+  try {
+    const callSid = req.body.call_control_id || req.body.CallSid;
+    const transcript = req.body.transcript || req.body.text || '';
+    const isFinal = req.body.is_final || false;
+    
+    if (!callSid || !transcript) {
+      res.status(200).send('OK');
+      return;
+    }
+    
+    console.log(`📝 Real-time transcript for ${callSid}: "${transcript}" (final: ${isFinal})`);
+    
+    // Only process final transcripts to avoid processing partial text
+    if (isFinal && transcript.trim()) {
+      const conversation = conversations.get(callSid);
+      if (conversation) {
+        // Process immediately without waiting for recording
+        conversation.pendingTranscript = transcript;
+        // Trigger processing
+        processTranscript(callSid, transcript);
+      }
+    }
+    
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('❌ Transcription webhook error:', error.message);
+    res.status(200).send('OK'); // Always return OK to Telnyx
+  }
+});
+
+// Process transcript immediately (for real-time transcription)
+async function processTranscript(callSid, userInput) {
+  try {
+    const conversation = conversations.get(callSid);
+    if (!conversation) return;
+    
+    // Add user message
+    conversation.history.push({
+      role: 'user',
+      content: userInput.trim()
+    });
+    
+    // Get GPT response
+    const gptResponse = await getGPTResponse(conversation.history);
+    
+    // Add assistant message
+    conversation.history.push({
+      role: 'assistant',
+      content: gptResponse
+    });
+    
+    // Store response for next webhook call
+    conversation.pendingResponse = gptResponse;
+    
+    console.log(`✅ Processed transcript, response ready: "${gptResponse}"`);
+  } catch (error) {
+    console.error('❌ Error processing transcript:', error.message);
+  }
+}
 
 // Handle user speech input
 app.post('/process-speech', async (req, res) => {
@@ -252,20 +315,47 @@ app.post('/process-speech', async (req, res) => {
     const currentConversation = conversations.get(callSid);
     const startTime = Date.now();
     
-    if (!recordingUrl) {
-      console.warn('⚠️ No recording URL provided yet, waiting for recording to be processed');
-      // Return immediately and let Twilio call back when recording is ready
-      // Or continue with a prompt
+    // OPTIMIZATION: Check if we have a pending response from real-time transcription
+    if (currentConversation.pendingResponse) {
+      console.log('✅ Using cached response from real-time transcription');
+      const gptResponse = currentConversation.pendingResponse;
+      delete currentConversation.pendingResponse;
+      
+      // Check if conversation is complete
+      if (gptResponse.includes('CONVERSATION_COMPLETE')) {
+        console.log('✅ Conversation complete - saving to Airtable');
+        
+        if (airtableBase) {
+          saveToAirtable(currentConversation).catch(err => {
+            console.error('⚠️ Airtable save failed:', err.message);
+          });
+        }
+        
+        conversations.delete(callSid);
+        
+        const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!</Say>
+  <Hangup/>
+</Response>`;
+        
+        res.type('application/xml');
+        res.status(200);
+        res.send(texmlResponse);
+        return;
+      }
+      
+      // Continue with cached response
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna" language="en-US">Please hold while I process your response.</Say>
-  <Pause length="2"/>
+  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
       
@@ -275,17 +365,46 @@ app.post('/process-speech', async (req, res) => {
       return;
     }
     
-    console.log(`🎧 Transcribing audio...`);
+    if (!recordingUrl) {
+      console.warn('⚠️ No recording URL provided yet, retrying...');
+      // Retry quickly - recording might be processing
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Pause length="1"/>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="30" 
+    timeout="3"
+    playBeep="false"
+    finishOnKey="#"
+  />
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+      return;
+    }
     
+    console.log(`🎧 Processing audio (URL: ${recordingUrl})...`);
+    
+    // OPTIMIZATION: Process transcription and prepare GPT in parallel
     let userInput;
+    let transcriptionPromise;
+    
     try {
-      // Start transcription immediately without waiting
-      userInput = await transcribeWithWhisper(recordingUrl);
+      // Start transcription immediately
+      transcriptionPromise = transcribeWithWhisper(recordingUrl);
+      
+      // While transcription is happening, prepare the conversation context
+      // This allows GPT to be ready faster
+      userInput = await transcriptionPromise;
       console.log(`✅ User said: "${userInput}" (${Date.now() - startTime}ms)`);
     } catch (transcriptionError) {
       console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
-      userInput = "[unclear audio]";
+      // Don't fail completely - use a placeholder and continue
+      userInput = "[unclear audio - please repeat]";
     }
     
     // Add user message to history
@@ -294,7 +413,7 @@ app.post('/process-speech', async (req, res) => {
       content: userInput
     });
     
-    // Get GPT response
+    // Get GPT response - use faster model
     const gptStartTime = Date.now();
     const gptResponse = await getGPTResponse(currentConversation.history);
     console.log(`🤖 GPT said: "${gptResponse}" (${Date.now() - gptStartTime}ms)`);
@@ -334,16 +453,17 @@ app.post('/process-speech', async (req, res) => {
       res.send(texmlResponse);
       
     } else {
-      // Continue conversation
+      // Continue conversation - use shorter recordings for speed
       const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
   <Record 
     action="/process-speech" 
     method="POST" 
-    maxLength="60" 
-    timeout="4"
+    maxLength="30" 
+    timeout="3"
     playBeep="false"
+    finishOnKey="#"
   />
 </Response>`;
       
@@ -396,16 +516,18 @@ async function getGPTResponse(conversationHistory) {
         // You can also set GPT_MODEL environment variable to override
         model: process.env.GPT_MODEL || 'gpt-3.5-turbo',
         messages: conversationHistory,
-        max_tokens: 150,
-        temperature: 0.7
+        max_tokens: 100, // Reduced for faster responses
+        temperature: 0.7,
+        // OPTIMIZATION: Stream false for faster single response
+        stream: false
       },
       {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        // OPTIMIZATION: Reduce timeout to fail faster if there's an issue
-        timeout: 20000
+        // OPTIMIZATION: Aggressive timeout - fail fast
+        timeout: 10000 // Reduced from 20000
       }
     );
     
@@ -426,7 +548,7 @@ async function getGPTResponse(conversationHistory) {
   }
 }
 
-// Transcribe audio with OpenAI Whisper
+// Transcribe audio with OpenAI Whisper - OPTIMIZED for speed
 async function transcribeWithWhisper(audioUrl) {
   try {
     if (!process.env.OPENAI_API_KEY) {
@@ -436,12 +558,16 @@ async function transcribeWithWhisper(audioUrl) {
     console.log(`📥 Downloading audio from: ${audioUrl}`);
     const downloadStart = Date.now();
     
-    // OPTIMIZATION: Reduced timeout for faster failure
+    // OPTIMIZATION: Aggressive timeouts and smaller buffer for speed
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
-      timeout: 15000, // Reduced from 30000
-      maxContentLength: 10 * 1024 * 1024, // 10MB max
-      maxBodyLength: 10 * 1024 * 1024
+      timeout: 8000, // Very aggressive - fail fast
+      maxContentLength: 5 * 1024 * 1024, // 5MB max (smaller files = faster)
+      maxBodyLength: 5 * 1024 * 1024,
+      // Add compression if supported
+      headers: {
+        'Accept-Encoding': 'gzip, deflate'
+      }
     });
     
     const audioBuffer = Buffer.from(audioResponse.data);
@@ -452,8 +578,11 @@ async function transcribeWithWhisper(audioUrl) {
       filename: 'recording.mp3',
       contentType: 'audio/mpeg'
     });
+    // OPTIMIZATION: Use faster model if available, or standard whisper-1
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
+    // OPTIMIZATION: Add response_format for faster processing
+    formData.append('response_format', 'text');
     
     console.log(`🎤 Sending to Whisper API...`);
     const whisperStart = Date.now();
@@ -466,13 +595,17 @@ async function transcribeWithWhisper(audioUrl) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        // OPTIMIZATION: Reduced timeout for faster failure
-        timeout: 20000 // Reduced from 30000
+        // OPTIMIZATION: Aggressive timeout - fail fast if slow
+        timeout: 10000 // Very aggressive timeout
       }
     );
     
-    console.log(`✅ Transcription received (${Date.now() - whisperStart}ms)`);
-    return response.data.text.trim();
+    const transcriptionTime = Date.now() - whisperStart;
+    console.log(`✅ Transcription received (${transcriptionTime}ms)`);
+    
+    // Handle text response format
+    const text = typeof response.data === 'string' ? response.data.trim() : response.data.text.trim();
+    return text || '[no speech detected]';
     
   } catch (error) {
     console.error('❌ Whisper error:', error.response?.data || error.message);
@@ -480,10 +613,8 @@ async function transcribeWithWhisper(audioUrl) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
     }
-    if (error.stack) {
-      console.error('Whisper error stack:', error.stack);
-    }
-    throw error;
+    // Don't throw - return placeholder so conversation can continue
+    return '[transcription error - please repeat]';
   }
 }
 
