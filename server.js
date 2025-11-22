@@ -1,6 +1,6 @@
 const express = require('express');
+const WebSocket = require('ws');
 const axios = require('axios');
-const FormData = require('form-data');
 const Airtable = require('airtable');
 
 const app = express();
@@ -10,262 +10,339 @@ app.use(express.json());
 app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Initialize Airtable (optional)
+// Initialize Airtable
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
     .base(process.env.AIRTABLE_BASE_ID);
 }
 
-// Store call sessions (maps CallSid to Voiceflow user_id)
-const callSessions = new Map();
+// Store active calls
+const activeCalls = new Map();
+
+// System instructions for OpenAI Realtime
+const SYSTEM_INSTRUCTIONS = `You are an AI legal intake assistant for truck accident cases. Your job is to collect information from callers naturally and efficiently.
+
+Ask these questions in order, but adapt based on what they say:
+1. Date of the accident
+2. Location (city, state, road)
+3. Description of what happened
+4. Were there injuries?
+5. Their full name
+6. Their phone number
+
+RULES:
+- Keep responses SHORT (1-2 sentences)
+- Be conversational and natural
+- If they provide info out of order, acknowledge it and skip that question
+- Always confirm important details
+- Be empathetic
+
+When you have all 6 pieces of information, say: "Thank you! An attorney will contact you within 24 hours." Then end the call.`;
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('🚀 Voiceflow Voice Agent Running!');
+  res.send('🚀 OpenAI Realtime Voice Agent Running!');
 });
 
-// Initial webhook - start Voiceflow conversation
-app.post('/texml-webhook', async (req, res) => {
+// Telnyx webhook - initiate call with Call Control API
+app.post('/telnyx-webhook', async (req, res) => {
   try {
-    console.log('========================================');
-    console.log('📞 NEW CALL RECEIVED');
-    console.log('========================================');
+    const event = req.body.data;
+    const eventType = event?.event_type || req.body.event_type;
     
-    const callSid = req.body.CallSid;
-    const callerPhone = req.body.From;
+    console.log(`📞 Telnyx event: ${eventType}`);
     
-    console.log(`📱 From: ${callerPhone}`);
-    console.log(`🆔 Call SID: ${callSid}`);
-    
-    // Create a unique user ID for this call (use phone number or CallSid)
-    const userId = callerPhone.replace('+', ''); // Remove + from phone number
-    callSessions.set(callSid, {
-      userId: userId,
-      phone: callerPhone,
-      startTime: new Date().toISOString()
-    });
-    
-    // Launch Voiceflow conversation (this triggers the "Start" block)
-    const voiceflowResponse = await sendToVoiceflow(userId, { type: 'launch' });
-    
-    console.log('🤖 Voiceflow initial response:', voiceflowResponse);
-    
-    // Build TeXML response from Voiceflow
-    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
-    
-    console.log('✅ Sending TeXML response');
-    console.log('========================================');
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    
-    // Fallback response
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="woman">Sorry, there was an error. Please try again later.</Say>
-  <Hangup/>
-</Response>`;
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
-  }
-});
-
-// Handle user speech input
-app.post('/process-speech', async (req, res) => {
-  try {
-    console.log('========================================');
-    console.log('🎤 SPEECH INPUT RECEIVED');
-    console.log('========================================');
-    
-    const recordingUrl = req.body.RecordingUrl;
-    const callSid = req.body.CallSid;
-    
-    const session = callSessions.get(callSid);
-    if (!session) {
-      throw new Error('Session not found');
-    }
-    
-    console.log(`🎧 Transcribing audio...`);
-    
-    let userInput;
-    try {
-      // Transcribe with Whisper
-      userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}"`);
-    } catch (transcriptionError) {
-      console.error('❌ Transcription failed:', transcriptionError.message);
+    if (eventType === 'call.initiated' || eventType === 'call.answered') {
+      const callControlId = event.call_control_id;
+      const callSid = event.call_session_id;
+      const from = event.from;
       
-      // Send empty/null to Voiceflow to trigger its "no reply" handler
-      // This lets Voiceflow handle the error with its own prompts
-      userInput = null;
+      console.log(`✅ New call: ${callSid} from ${from}`);
+      
+      // Answer the call
+      await answerCall(callControlId);
+      
+      // Start media streaming
+      await startMediaStream(callControlId, callSid);
+      
+      res.status(200).send('OK');
+      
+    } else if (eventType === 'call.hangup') {
+      const callSid = event.call_session_id;
+      console.log(`👋 Call ended: ${callSid}`);
+      
+      // Clean up
+      const callData = activeCalls.get(callSid);
+      if (callData) {
+        if (callData.openaiWs) callData.openaiWs.close();
+        if (callData.telnyxWs) callData.telnyxWs.close();
+        
+        // Save to Airtable
+        if (airtableBase && callData.transcript) {
+          await saveToAirtable(callData);
+        }
+        
+        activeCalls.delete(callSid);
+      }
+      
+      res.status(200).send('OK');
+      
+    } else {
+      res.status(200).send('OK');
     }
     
-    // Send to Voiceflow (even if transcription failed)
-    // Voiceflow will handle "no reply" or "no match" scenarios
-    const voiceflowResponse = await sendToVoiceflow(session.userId, {
-      type: userInput ? 'text' : 'no-reply',
-      payload: userInput || ''
-    });
-    
-    console.log('🤖 Voiceflow response:', JSON.stringify(voiceflowResponse, null, 2));
-    
-    // Build TeXML response
-    const texmlResponse = buildTexmlFromVoiceflow(voiceflowResponse);
-    
-    console.log('✅ Sending TeXML response');
-    console.log('========================================');
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
-    
   } catch (error) {
-    console.error('❌ Critical error:', error);
-    
-    // Last resort fallback only for system errors
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
-  <Hangup/>
-</Response>`;
-    
-    res.type('application/xml');
-    res.send(texmlResponse);
+    console.error('❌ Webhook error:', error.message);
+    res.status(200).send('OK');
   }
 });
 
-// Send message to Voiceflow API
-async function sendToVoiceflow(userId, action) {
+// WebSocket server for Telnyx media streams
+const wss = new WebSocket.Server({ noServer: true });
+
+wss.on('connection', (telnyxWs, req) => {
+  const callSid = req.url.split('/').pop();
+  console.log(`🔌 Telnyx WebSocket connected for call: ${callSid}`);
+  
+  // Initialize call data
+  const callData = {
+    callSid,
+    telnyxWs,
+    openaiWs: null,
+    transcript: '',
+    startTime: new Date().toISOString(),
+    phone: null
+  };
+  
+  activeCalls.set(callSid, callData);
+  
+  // Connect to OpenAI Realtime API
+  connectToOpenAI(callData);
+  
+  // Handle incoming audio from Telnyx
+  telnyxWs.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      
+      if (data.event === 'media' && callData.openaiWs?.readyState === WebSocket.OPEN) {
+        // Forward audio to OpenAI (base64 encoded)
+        callData.openaiWs.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: data.media.payload
+        }));
+      }
+      
+      if (data.event === 'start') {
+        console.log(`🎤 Media stream started for ${callSid}`);
+        callData.phone = data.start.customParameters?.from || 'unknown';
+      }
+      
+    } catch (error) {
+      console.error('❌ Telnyx message error:', error.message);
+    }
+  });
+  
+  telnyxWs.on('close', () => {
+    console.log(`🔌 Telnyx WebSocket closed for ${callSid}`);
+    if (callData.openaiWs) {
+      callData.openaiWs.close();
+    }
+  });
+});
+
+// Connect to OpenAI Realtime API
+function connectToOpenAI(callData) {
+  const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
+  
+  const openaiWs = new WebSocket(url, {
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'OpenAI-Beta': 'realtime=v1'
+    }
+  });
+  
+  callData.openaiWs = openaiWs;
+  
+  openaiWs.on('open', () => {
+    console.log(`🤖 OpenAI Realtime connected for ${callData.callSid}`);
+    
+    // Configure session
+    openaiWs.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        modalities: ['text', 'audio'],
+        instructions: SYSTEM_INSTRUCTIONS,
+        voice: 'alloy', // Options: alloy, echo, shimmer
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 500
+        }
+      }
+    }));
+    
+    // Start conversation
+    openaiWs.send(JSON.stringify({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'assistant',
+        content: [{
+          type: 'text',
+          text: "Hi! Thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?"
+        }]
+      }
+    }));
+    
+    openaiWs.send(JSON.stringify({ type: 'response.create' }));
+  });
+  
+  openaiWs.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      
+      // Handle audio output from OpenAI
+      if (data.type === 'response.audio.delta' && data.delta) {
+        // Forward audio to Telnyx
+        if (callData.telnyxWs?.readyState === WebSocket.OPEN) {
+          callData.telnyxWs.send(JSON.stringify({
+            event: 'media',
+            media: {
+              payload: data.delta
+            }
+          }));
+        }
+      }
+      
+      // Log transcript
+      if (data.type === 'conversation.item.created') {
+        const item = data.item;
+        if (item.role === 'user' && item.content) {
+          const text = item.content[0]?.transcript || item.content[0]?.text;
+          if (text) {
+            console.log(`👤 User: ${text}`);
+            callData.transcript += `User: ${text}\n`;
+          }
+        }
+        if (item.role === 'assistant' && item.content) {
+          const text = item.content[0]?.transcript || item.content[0]?.text;
+          if (text) {
+            console.log(`🤖 Assistant: ${text}`);
+            callData.transcript += `Assistant: ${text}\n`;
+          }
+        }
+      }
+      
+      // Check if conversation is complete
+      if (data.type === 'response.done') {
+        const text = data.response?.output?.[0]?.content?.[0]?.transcript || '';
+        if (text.toLowerCase().includes('attorney will contact you')) {
+          console.log('✅ Conversation complete');
+          setTimeout(() => {
+            // Hang up call
+            if (callData.telnyxWs?.readyState === WebSocket.OPEN) {
+              callData.telnyxWs.close();
+            }
+          }, 2000);
+        }
+      }
+      
+    } catch (error) {
+      console.error('❌ OpenAI message error:', error.message);
+    }
+  });
+  
+  openaiWs.on('error', (error) => {
+    console.error('❌ OpenAI WebSocket error:', error.message);
+  });
+  
+  openaiWs.on('close', () => {
+    console.log(`🤖 OpenAI WebSocket closed for ${callData.callSid}`);
+  });
+}
+
+// Answer call via Telnyx Call Control API
+async function answerCall(callControlId) {
   try {
-    const response = await axios.post(
-      `https://general-runtime.voiceflow.com/state/user/${userId}/interact`,
-      { action: action },
+    await axios.post(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
+      {},
       {
         headers: {
-          'Authorization': process.env.VOICEFLOW_API_KEY,
+          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
     );
-    
-    return response.data;
-    
+    console.log('✅ Call answered');
   } catch (error) {
-    console.error('❌ Voiceflow API error:', error.response?.data || error.message);
-    throw error;
+    console.error('❌ Answer call error:', error.response?.data || error.message);
   }
 }
 
-// Build TeXML from Voiceflow response
-function buildTexmlFromVoiceflow(voiceflowData) {
-  let texmlParts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>'];
-  
-  let hasEnd = false;
-  let messageCount = 0;
-  
-  // Voiceflow returns an array of trace objects
-  for (const trace of voiceflowData) {
-    // Only process text/speak messages
-    if (trace.type === 'text' || trace.type === 'speak') {
-      const text = trace.payload?.message || trace.payload?.text || '';
-      if (text) {
-        messageCount++;
-        // Use better voice - Polly.Joanna sounds more natural than default
-        texmlParts.push(`  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(text)}</Say>`);
-        
-        // Only add pause between messages, not after the last one
-        if (messageCount < voiceflowData.filter(t => t.type === 'text' || t.type === 'speak').length) {
-          texmlParts.push(`  <Pause length="1"/>`);
-        }
-      }
-    }
-    
-    // Check for end of conversation
-    if (trace.type === 'end') {
-      hasEnd = true;
-    }
-  }
-  
-  if (hasEnd) {
-    // Conversation ended
-    texmlParts.push(`  <Hangup/>`);
-  } else {
-    // Wait for user input with a slightly longer timeout for natural speech
-    texmlParts.push(`  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="4"
-    playBeep="false"
-  />`);
-  }
-  
-  texmlParts.push('</Response>');
-  return texmlParts.join('\n');
-}
-
-// Transcribe audio with OpenAI Whisper
-async function transcribeWithWhisper(audioUrl) {
+// Start media streaming
+async function startMediaStream(callControlId, callSid) {
   try {
-    // Download audio
-    const audioResponse = await axios.get(audioUrl, { 
-      responseType: 'arraybuffer',
-      timeout: 30000
-    });
+    const streamUrl = `wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app.onrender.com'}/media/${callSid}`;
     
-    const audioBuffer = Buffer.from(audioResponse.data);
-    
-    // Prepare form data
-    const formData = new FormData();
-    formData.append('file', audioBuffer, {
-      filename: 'recording.mp3',
-      contentType: 'audio/mpeg'
-    });
-    formData.append('model', 'whisper-1');
-    formData.append('language', 'en');
-    
-    // Call Whisper API
-    const response = await axios.post(
-      'https://api.openai.com/v1/audio/transcriptions',
-      formData,
+    await axios.post(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/streaming_start`,
+      {
+        stream_url: streamUrl,
+        stream_track: 'both'
+      },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          ...formData.getHeaders()
-        },
-        timeout: 30000
+          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
     );
-    
-    return response.data.text.trim();
-    
+    console.log('✅ Media streaming started');
   } catch (error) {
-    console.error('❌ Whisper error:', error.response?.data || error.message);
-    throw new Error('Transcription failed');
+    console.error('❌ Start streaming error:', error.response?.data || error.message);
   }
 }
 
-// Sanitize text for speech
-function sanitizeForSpeech(text) {
-  return text
-    .replace(/[<>]/g, '')
-    .replace(/&/g, 'and')
-    .substring(0, 500);
+// Save to Airtable
+async function saveToAirtable(callData) {
+  try {
+    await airtableBase('Leads').create({
+      "Phone Number": callData.phone,
+      "Call Start": callData.startTime,
+      "Full Transcript": callData.transcript,
+      "Status": "New",
+      "Qualified": "Yes"
+    });
+    console.log('✅ Saved to Airtable');
+  } catch (error) {
+    console.error('❌ Airtable error:', error.message);
+  }
 }
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// Start HTTP server
+const server = app.listen(process.env.PORT || 3000, () => {
   console.log('========================================');
-  console.log('🚀 VOICEFLOW VOICE AGENT STARTED');
+  console.log('🚀 OPENAI REALTIME VOICE AGENT STARTED');
   console.log('========================================');
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`📞 Webhook: /texml-webhook`);
+  console.log(`📡 Port: ${process.env.PORT || 3000}`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
-  console.log(`🤖 Voiceflow: ${process.env.VOICEFLOW_API_KEY ? '✅' : '❌'}`);
+  console.log(`📞 Telnyx: ${process.env.TELNYX_API_KEY ? '✅' : '❌'}`);
+  console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
+});
+
+// Upgrade HTTP server to handle WebSocket
+server.on('upgrade', (request, socket, head) => {
+  if (request.url.startsWith('/media/')) {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
 });
