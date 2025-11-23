@@ -119,16 +119,58 @@ app.post('/telnyx-webhook', async (req, res) => {
 async function processRecording(callSessionId, callControlId, recordingUrl) {
   try {
     const conversation = conversations.get(callSessionId);
-    if (!conversation) return;
+    if (!conversation) {
+      console.error('No conversation found for session:', callSessionId);
+      return;
+    }
+    
+    console.log('Processing recording from:', recordingUrl.substring(0, 80));
+    
+    // Stop any ongoing recording first
+    try {
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_stop`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+    } catch (e) {
+      // Ignore if already stopped
+    }
     
     console.log('Transcribing...');
     
     // Transcribe with Whisper
-    const userInput = await transcribeWithWhisper(recordingUrl);
-    console.log('User said:', userInput);
+    let userInput;
+    try {
+      userInput = await transcribeWithWhisper(recordingUrl);
+      console.log('User said:', userInput);
+      
+      if (!userInput || userInput.length < 2) {
+        console.warn('Empty or very short transcription, asking to repeat');
+        await speakToCall(callControlId, "Sorry, I didn't catch that. Could you please repeat?");
+        setTimeout(async () => {
+          await startRecording(callControlId, callSessionId);
+        }, 100);
+        return;
+      }
+    } catch (transcriptionError) {
+      console.error('Transcription error:', transcriptionError.message);
+      await speakToCall(callControlId, "Sorry, I'm having trouble hearing you. Could you please repeat?");
+      setTimeout(async () => {
+        await startRecording(callControlId, callSessionId);
+      }, 100);
+      return;
+    }
     
     // Add to history
     conversation.history.push({ role: 'user', content: userInput });
+    
+    console.log('Getting GPT response...');
     
     // Get GPT response
     const gptResponse = await getGPTResponse(conversation.history);
@@ -149,14 +191,15 @@ async function processRecording(callSessionId, callControlId, recordingUrl) {
       // Continue conversation
       await speakToCall(callControlId, gptResponse);
       
-      // Record next response
+      // Record next response after speaking finishes
       setTimeout(async () => {
         await startRecording(callControlId, callSessionId);
-      }, 100);
+      }, 500);
     }
     
   } catch (error) {
     console.error('Processing error:', error.message);
+    console.error('Error stack:', error.stack);
   }
 }
 
@@ -196,14 +239,15 @@ async function speakToCall(callControlId, text) {
 
 // Start recording
 async function startRecording(callControlId, callSessionId) {
-  await axios.post(
-    `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
-    {
-      format: 'mp3',
-      channels: 'single',
-      max_length: 15,
-      timeout: 1
-    },
+  try {
+    await axios.post(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
+      {
+        format: 'mp3',
+        channels: 'single',
+        max_length: 30,
+        play_beep: false
+      },
     {
       headers: {
         'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
@@ -211,7 +255,7 @@ async function startRecording(callControlId, callSessionId) {
       }
     }
   );
-  console.log('Recording started');
+  console.log('Recording started - waiting for speech');
 }
 
 // Hangup call
