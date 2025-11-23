@@ -190,7 +190,8 @@ async function startRecording(callControlId, callSessionId) {
       {
         format: 'mp3',
         channels: 'single',
-        max_length: 30,
+        max_length: 10,
+        timeout_secs: 2,
         play_beep: false
       },
       {
