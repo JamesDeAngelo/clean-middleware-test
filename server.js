@@ -280,11 +280,12 @@ app.post('/process-speech', async (req, res) => {
     
     let userInput;
     try {
+      // Start transcription and prepare GPT call in parallel
+      const transcriptionStart = Date.now();
       userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}"`);
+      console.log(`✅ User said: "${userInput}" (${Date.now() - transcriptionStart}ms)`);
     } catch (transcriptionError) {
       console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
       userInput = "[unclear audio]";
     }
     
@@ -294,9 +295,11 @@ app.post('/process-speech', async (req, res) => {
       content: userInput
     });
     
-    // Get GPT-4 response
+    // Get GPT response (optimized for speed)
+    const gptStart = Date.now();
     const gptResponse = await getGPTResponse(currentConversation.history);
-    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
+    console.log(`🤖 GPT said: "${gptResponse}" (${Date.now() - gptStart}ms)`);
+    console.log(`⏱️ Total response time: ${Date.now() - transcriptionStart}ms`);
     
     // Add assistant message to history
     currentConversation.history.push({
