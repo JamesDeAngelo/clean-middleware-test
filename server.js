@@ -72,10 +72,15 @@ app.post('/telnyx-webhook', async (req, res) => {
       const callSessionId = data.payload.call_session_id;
       const recordingUrl = data.payload.recording_urls?.mp3;
       
-      console.log('Recording saved');
+      console.log('========================================');
+      console.log('Recording saved event');
+      console.log('Recording URL:', recordingUrl);
+      console.log('========================================');
       
       if (recordingUrl) {
         processRecording(callSessionId, callControlId, recordingUrl);
+      } else {
+        console.error('NO RECORDING URL PROVIDED');
       }
       
       res.status(200).send('OK');
