@@ -20,27 +20,17 @@ const conversations = new Map();
 const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. 
 
 Ask these questions in order:
-
 1. Date of the accident
-
 2. Location (city, state, road)
-
 3. Description of what happened
-
 4. Were there injuries?
-
 5. Their full name
-
 6. Their phone number
 
 RULES:
-
 - Keep responses SHORT (1-2 sentences max)
-
 - Be conversational and empathetic
-
 - If they already provided info, skip that question
-
 - When you have all 6 pieces of information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
 // Health check
@@ -77,15 +67,15 @@ app.post('/telnyx-webhook', async (req, res) => {
       // Answer call
       await answerCall(callControlId);
       
-      // Greet caller - reduced initial delay
+      // Greet caller
       setTimeout(async () => {
         await speakToCall(callControlId, "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?");
         
-        // Start recording to get their response - reduced delay
+        // Start recording to get their response
         setTimeout(async () => {
           await startRecording(callControlId, callSessionId);
-        }, 50);
-      }, 500);
+        }, 100);
+      }, 1000);
       
       res.status(200).send('OK');
       
@@ -97,10 +87,7 @@ app.post('/telnyx-webhook', async (req, res) => {
       console.log('Recording saved, processing...');
       
       if (recordingUrl) {
-        // Process immediately without blocking
-        processRecording(callSessionId, callControlId, recordingUrl).catch(err => {
-          console.error('Processing error:', err.message);
-        });
+        await processRecording(callSessionId, callControlId, recordingUrl);
       }
       
       res.status(200).send('OK');
@@ -112,9 +99,7 @@ app.post('/telnyx-webhook', async (req, res) => {
       // Save to Airtable
       const conversation = conversations.get(callSessionId);
       if (conversation && airtableBase) {
-        saveToAirtable(conversation).catch(err => {
-          console.error('Airtable save error:', err.message);
-        });
+        await saveToAirtable(conversation);
       }
       
       conversations.delete(callSessionId);
@@ -145,7 +130,7 @@ async function processRecording(callSessionId, callControlId, recordingUrl) {
     // Add to history
     conversation.history.push({ role: 'user', content: userInput });
     
-    // Get GPT response - using faster model
+    // Get GPT response
     const gptResponse = await getGPTResponse(conversation.history);
     console.log('GPT said:', gptResponse);
     
@@ -158,16 +143,16 @@ async function processRecording(callSessionId, callControlId, recordingUrl) {
       
       setTimeout(async () => {
         await hangupCall(callControlId);
-      }, 2000);
+      }, 3000);
       
     } else {
       // Continue conversation
       await speakToCall(callControlId, gptResponse);
       
-      // Record next response - reduced delay
+      // Record next response
       setTimeout(async () => {
         await startRecording(callControlId, callSessionId);
-      }, 50);
+      }, 100);
     }
     
   } catch (error) {
@@ -184,8 +169,7 @@ async function answerCall(callControlId) {
       headers: {
         'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
-      },
-      timeout: 5000
+      }
     }
   );
   console.log('Call answered');
@@ -204,29 +188,27 @@ async function speakToCall(callControlId, text) {
       headers: {
         'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
-      },
-      timeout: 5000
+      }
     }
   );
   console.log('Speaking:', text.substring(0, 50) + '...');
 }
 
-// Start recording - OPTIMIZED: reduced timeout from 3s to 1s
+// Start recording
 async function startRecording(callControlId, callSessionId) {
   await axios.post(
     `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
     {
       format: 'mp3',
       channels: 'single',
-      max_length: 15,
-      timeout: 1  // REDUCED from 3 to 1 second - saves 2 seconds per turn!
+      max_length: 20,
+      timeout: 3
     },
     {
       headers: {
         'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
-      },
-      timeout: 5000
+      }
     }
   );
   console.log('Recording started');
@@ -241,8 +223,7 @@ async function hangupCall(callControlId) {
       headers: {
         'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json'
-      },
-      timeout: 5000
+      }
     }
   );
   console.log('Call hung up');
@@ -252,7 +233,7 @@ async function hangupCall(callControlId) {
 async function transcribeWithWhisper(audioUrl) {
   const audioResponse = await axios.get(audioUrl, { 
     responseType: 'arraybuffer',
-    timeout: 8000
+    timeout: 10000
   });
   
   const audioBuffer = Buffer.from(audioResponse.data);
@@ -273,19 +254,19 @@ async function transcribeWithWhisper(audioUrl) {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         ...formData.getHeaders()
       },
-      timeout: 15000
+      timeout: 10000
     }
   );
   
   return response.data.text.trim();
 }
 
-// Get GPT response - OPTIMIZED: using gpt-4o-mini which is 2-3x faster
+// Get GPT response
 async function getGPTResponse(conversationHistory) {
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: 'gpt-4o-mini',  // CHANGED: gpt-4o-mini is much faster than gpt-4o
+      model: 'gpt-4o',
       messages: conversationHistory,
       max_tokens: 100,
       temperature: 0.7
