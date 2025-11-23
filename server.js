@@ -6,17 +6,14 @@ const Airtable = require('airtable');
 const app = express();
 app.use(express.json());
 
-// Initialize Airtable
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
     .base(process.env.AIRTABLE_BASE_ID);
 }
 
-// Store conversations
 const conversations = new Map();
 
-// System prompt
 const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. 
 
 Ask these questions in order:
@@ -33,12 +30,10 @@ RULES:
 - If they already provided info, skip that question
 - When you have all 6 pieces of information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
-// Health check
 app.get('/', (req, res) => {
   res.send('Voice API Agent Running!');
 });
 
-// Voice API webhook
 app.post('/telnyx-webhook', async (req, res) => {
   try {
     const { data } = req.body;
@@ -53,7 +48,6 @@ app.post('/telnyx-webhook', async (req, res) => {
       
       console.log('New call from', from);
       
-      // Initialize conversation
       conversations.set(callSessionId, {
         callControlId,
         phone: from,
@@ -64,17 +58,11 @@ app.post('/telnyx-webhook', async (req, res) => {
         startTime: new Date().toISOString()
       });
       
-      // Answer call
       await answerCall(callControlId);
       
-      // Greet caller
       setTimeout(async () => {
         await speakToCall(callControlId, "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?");
-        
-        // Start recording to get their response
-        setTimeout(async () => {
-          await startRecording(callControlId, callSessionId);
-        }, 100);
+        setTimeout(() => startRecording(callControlId, callSessionId), 100);
       }, 1000);
       
       res.status(200).send('OK');
@@ -84,10 +72,10 @@ app.post('/telnyx-webhook', async (req, res) => {
       const callSessionId = data.payload.call_session_id;
       const recordingUrl = data.payload.recording_urls?.mp3;
       
-      console.log('Recording saved, processing...');
+      console.log('Recording saved');
       
       if (recordingUrl) {
-        await processRecording(callSessionId, callControlId, recordingUrl);
+        processRecording(callSessionId, callControlId, recordingUrl);
       }
       
       res.status(200).send('OK');
@@ -96,10 +84,9 @@ app.post('/telnyx-webhook', async (req, res) => {
       const callSessionId = data.payload.call_session_id;
       console.log('Call ended');
       
-      // Save to Airtable
       const conversation = conversations.get(callSessionId);
       if (conversation && airtableBase) {
-        await saveToAirtable(conversation);
+        saveToAirtable(conversation);
       }
       
       conversations.delete(callSessionId);
@@ -115,44 +102,48 @@ app.post('/telnyx-webhook', async (req, res) => {
   }
 });
 
-// Process recording
 async function processRecording(callSessionId, callControlId, recordingUrl) {
   try {
     const conversation = conversations.get(callSessionId);
-    if (!conversation) return;
+    if (!conversation) {
+      console.error('No conversation found');
+      return;
+    }
     
     console.log('Transcribing...');
     
-    // Transcribe with Whisper
-    const userInput = await transcribeWithWhisper(recordingUrl);
-    console.log('User said:', userInput);
+    let userInput;
+    try {
+      userInput = await transcribeWithWhisper(recordingUrl);
+      console.log('User said:', userInput);
+      
+      if (!userInput || userInput.length < 2) {
+        console.warn('Empty transcription');
+        await speakToCall(callControlId, "Sorry, I didn't catch that. Could you please repeat?");
+        setTimeout(() => startRecording(callControlId, callSessionId), 500);
+        return;
+      }
+    } catch (err) {
+      console.error('Transcription error:', err.message);
+      await speakToCall(callControlId, "Sorry, I'm having trouble hearing you. Could you repeat?");
+      setTimeout(() => startRecording(callControlId, callSessionId), 500);
+      return;
+    }
     
-    // Add to history
     conversation.history.push({ role: 'user', content: userInput });
     
-    // Get GPT response
+    console.log('Getting GPT response...');
     const gptResponse = await getGPTResponse(conversation.history);
     console.log('GPT said:', gptResponse);
     
-    // Add to history
     conversation.history.push({ role: 'assistant', content: gptResponse });
     
-    // Check if done
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
       await speakToCall(callControlId, "Thank you! A truck accident attorney will contact you within 24 hours. Have a great day!");
-      
-      setTimeout(async () => {
-        await hangupCall(callControlId);
-      }, 3000);
-      
+      setTimeout(() => hangupCall(callControlId), 3000);
     } else {
-      // Continue conversation
       await speakToCall(callControlId, gptResponse);
-      
-      // Record next response
-      setTimeout(async () => {
-        await startRecording(callControlId, callSessionId);
-      }, 100);
+      setTimeout(() => startRecording(callControlId, callSessionId), 500);
     }
     
   } catch (error) {
@@ -160,7 +151,6 @@ async function processRecording(callSessionId, callControlId, recordingUrl) {
   }
 }
 
-// Answer call
 async function answerCall(callControlId) {
   await axios.post(
     `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
@@ -175,7 +165,6 @@ async function answerCall(callControlId) {
   console.log('Call answered');
 }
 
-// Speak to caller
 async function speakToCall(callControlId, text) {
   await axios.post(
     `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
@@ -191,10 +180,9 @@ async function speakToCall(callControlId, text) {
       }
     }
   );
-  console.log('Speaking:', text.substring(0, 50) + '...');
+  console.log('Speaking:', text.substring(0, 50));
 }
 
-// Start recording
 async function startRecording(callControlId, callSessionId) {
   try {
     await axios.post(
@@ -205,32 +193,37 @@ async function startRecording(callControlId, callSessionId) {
         max_length: 30,
         play_beep: false
       },
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-        'Content-Type': 'application/json'
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
-  console.log('Recording started');
+    );
+    console.log('Recording started');
+  } catch (error) {
+    console.error('Recording error:', error.message);
+  }
 }
 
-// Hangup call
 async function hangupCall(callControlId) {
-  await axios.post(
-    `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-    {},
-    {
-      headers: {
-        'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-        'Content-Type': 'application/json'
+  try {
+    await axios.post(
+      `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+      {},
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
-    }
-  );
-  console.log('Call hung up');
+    );
+    console.log('Call hung up');
+  } catch (error) {
+    console.error('Hangup error:', error.message);
+  }
 }
 
-// Transcribe with Whisper
 async function transcribeWithWhisper(audioUrl) {
   const audioResponse = await axios.get(audioUrl, { 
     responseType: 'arraybuffer',
@@ -262,7 +255,6 @@ async function transcribeWithWhisper(audioUrl) {
   return response.data.text.trim();
 }
 
-// Get GPT response
 async function getGPTResponse(conversationHistory) {
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
@@ -284,7 +276,6 @@ async function getGPTResponse(conversationHistory) {
   return response.data.choices[0].message.content.trim();
 }
 
-// Save to Airtable
 async function saveToAirtable(conversation) {
   try {
     const fullTranscript = conversation.history
@@ -306,7 +297,6 @@ async function saveToAirtable(conversation) {
   }
 }
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('VOICE API AGENT STARTED');
