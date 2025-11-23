@@ -392,9 +392,9 @@ async function getGPTResponse(conversationHistory) {
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4',
+        model: 'gpt-4o',
         messages: conversationHistory,
-        max_tokens: 150,
+        max_tokens: 100, // Shorter = faster
         temperature: 0.7
       },
       {
