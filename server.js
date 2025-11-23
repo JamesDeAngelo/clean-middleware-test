@@ -109,50 +109,74 @@ app.post('/telnyx-webhook', async (req, res) => {
 
 async function processRecording(callSessionId, callControlId, recordingUrl) {
   try {
+    console.log('========================================');
+    console.log('PROCESSING RECORDING');
+    console.log('========================================');
+    
     const conversation = conversations.get(callSessionId);
     if (!conversation) {
-      console.error('No conversation found');
+      console.error('No conversation found for session:', callSessionId);
+      console.error('Available sessions:', Array.from(conversations.keys()));
       return;
     }
     
-    console.log('Transcribing...');
+    console.log('Downloading and transcribing audio...');
     
     let userInput;
     try {
       userInput = await transcribeWithWhisper(recordingUrl);
-      console.log('User said:', userInput);
+      console.log('========================================');
+      console.log('USER SAID:', userInput);
+      console.log('Length:', userInput.length, 'chars');
+      console.log('========================================');
       
-      if (!userInput || userInput.length < 2) {
-        console.warn('Empty transcription');
-        await speakToCall(callControlId, "Sorry, I didn't catch that. Could you please repeat?");
-        setTimeout(() => startRecording(callControlId, callSessionId), 500);
+      if (!userInput || userInput.length < 3) {
+        console.warn('Transcription too short or empty');
+        await speakToCall(callControlId, "I'm sorry, I didn't catch that. Could you please repeat your answer?");
+        setTimeout(() => startRecording(callControlId, callSessionId), 1000);
         return;
       }
     } catch (err) {
-      console.error('Transcription error:', err.message);
-      await speakToCall(callControlId, "Sorry, I'm having trouble hearing you. Could you repeat?");
-      setTimeout(() => startRecording(callControlId, callSessionId), 500);
+      console.error('========================================');
+      console.error('TRANSCRIPTION ERROR:', err.message);
+      console.error('========================================');
+      await speakToCall(callControlId, "I'm having trouble hearing you. Could you please repeat?");
+      setTimeout(() => startRecording(callControlId, callSessionId), 1000);
       return;
     }
     
     conversation.history.push({ role: 'user', content: userInput });
     
-    console.log('Getting GPT response...');
+    console.log('Calling GPT...');
+    console.log('History length:', conversation.history.length);
+    
     const gptResponse = await getGPTResponse(conversation.history);
-    console.log('GPT said:', gptResponse);
+    console.log('========================================');
+    console.log('GPT RESPONSE:', gptResponse);
+    console.log('========================================');
     
     conversation.history.push({ role: 'assistant', content: gptResponse });
     
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
+      console.log('Conversation complete - ending call');
       await speakToCall(callControlId, "Thank you! A truck accident attorney will contact you within 24 hours. Have a great day!");
-      setTimeout(() => hangupCall(callControlId), 3000);
+      setTimeout(() => hangupCall(callControlId), 4000);
     } else {
+      console.log('Continuing conversation...');
       await speakToCall(callControlId, gptResponse);
-      setTimeout(() => startRecording(callControlId, callSessionId), 500);
+      console.log('Waiting 1 second before next recording...');
+      setTimeout(() => {
+        console.log('Starting next recording...');
+        startRecording(callControlId, callSessionId);
+      }, 1000);
     }
     
   } catch (error) {
-    console.error('Processing error:', error.message);
+    console.error('========================================');
+    console.error('CRITICAL ERROR IN PROCESSING');
+    console.error('Error:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('========================================');
   }
 }
 
