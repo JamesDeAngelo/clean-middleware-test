@@ -1,364 +1,456 @@
-
 const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
 const Airtable = require('airtable');
 
 const app = express();
-app.use(express.json());
 
-// Initialize Airtable
+// Middleware - parse all request types
+app.use(express.json());
+app.use(express.text({ type: 'application/xml' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.raw({ type: 'application/octet-stream' }));
+
+// Log ALL incoming requests
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`\n[${timestamp}] ========================================`);
+  console.log(`${req.method} ${req.path}`);
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Query:', JSON.stringify(req.query, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  console.log('========================================\n');
+  next();
+});
+
+// Initialize Airtable (optional)
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
-  airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
-    .base(process.env.AIRTABLE_BASE_ID);
+  try {
+    airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
+      .base(process.env.AIRTABLE_BASE_ID);
+    console.log('✅ Airtable initialized');
+  } catch (error) {
+    console.error('❌ Airtable initialization failed:', error.message);
+  }
 }
 
-// Store conversations
+// Store conversation history for each call
 const conversations = new Map();
 
-// System prompt
-const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. 
+// System prompt - your AI's personality and logic
+const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. Your job is to collect information from callers in a friendly, professional manner.
 
-Ask these questions in order:
+CONVERSATION FLOW:
 
-1. Date of the accident
+1. Greet caller and explain you'll ask a few questions
 
-2. Location (city, state, road)
+2. Ask for the date of the accident
 
-3. Description of what happened
+3. Ask where the accident happened (city, state, road)
 
-4. Were there injuries?
+4. Ask them to describe what happened
 
-5. Their full name
+5. Ask if anyone was injured
 
-6. Their phone number
+6. Ask for their full name
+
+7. Ask for their phone number
+
+8. Thank them and let them know an attorney will contact them
 
 RULES:
 
 - Keep responses SHORT (1-2 sentences max)
 
-- Be conversational and empathetic
+- If you don't understand, ask them to clarify once, then move on
 
-- If they already provided info, skip that question
+- Always confirm important details before moving to next question
 
-- When you have all 6 pieces of information, respond with exactly: "CONVERSATION_COMPLETE"`;
+- Be empathetic and professional
+
+- If they've already provided info, don't ask again
+
+- Extract structured data as you go: accident_date, location, description, injuries, caller_name, phone
+
+When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
 // Health check
 app.get('/', (req, res) => {
-  res.send('Voice API Agent Running!');
+  console.log('✅ Health check endpoint hit');
+  res.status(200).send('🚀 GPT-4 Voice Agent Running!');
 });
 
-// Voice API webhook
-app.post('/telnyx-webhook', async (req, res) => {
-  try {
-    const { data } = req.body;
-    const eventType = data?.event_type;
-    
-    console.log('Event:', eventType);
-    
-    if (eventType === 'call.initiated') {
-      const callControlId = data.payload.call_control_id;
-      const callSessionId = data.payload.call_session_id;
-      const from = data.payload.from;
-      
-      console.log('New call from', from);
-      
-      // Initialize conversation
-      conversations.set(callSessionId, {
-        callControlId,
-        phone: from,
-        history: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'assistant', content: "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?" }
-        ],
-        startTime: new Date().toISOString()
-      });
-      
-      // Answer call
-      await answerCall(callControlId);
-      
-      // Greet caller
-      setTimeout(async () => {
-        await speakToCall(callControlId, "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?");
-        
-        // Start recording to get their response
-        setTimeout(async () => {
-          await startRecording(callControlId, callSessionId);
-        }, 100);
-      }, 1000);
-      
-      res.status(200).send('OK');
-      
-    } else if (eventType === 'call.recording.saved') {
-      const callControlId = data.payload.call_control_id;
-      const callSessionId = data.payload.call_session_id;
-      const recordingUrl = data.payload.recording_urls?.mp3;
-      
-      console.log('=== RECORDING SAVED EVENT ===');
-      console.log('Recording URL:', recordingUrl);
-      console.log('Call Session ID:', callSessionId);
-      
-      if (recordingUrl) {
-        await processRecording(callSessionId, callControlId, recordingUrl);
-      } else {
-        console.error('ERROR: No recording URL provided in event!');
-        console.log('Full event payload:', JSON.stringify(data.payload, null, 2));
-      }
-      
-      res.status(200).send('OK');
-      
-    } else if (eventType === 'call.hangup') {
-      const callSessionId = data.payload.call_session_id;
-      console.log('Call ended');
-      
-      // Save to Airtable
-      const conversation = conversations.get(callSessionId);
-      if (conversation && airtableBase) {
-        await saveToAirtable(conversation);
-      }
-      
-      conversations.delete(callSessionId);
-      res.status(200).send('OK');
-      
-    } else {
-      res.status(200).send('OK');
-    }
-    
-  } catch (error) {
-    console.error('Webhook error:', error.message);
-    console.error('Stack:', error.stack);
-    res.status(200).send('OK');
-  }
+// Test endpoint to verify server is working
+app.get('/test', (req, res) => {
+  console.log('✅ Test endpoint hit');
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    conversations: conversations.size,
+    openai: !!process.env.OPENAI_API_KEY,
+    airtable: !!airtableBase
+  });
 });
 
-// Process recording
-async function processRecording(callSessionId, callControlId, recordingUrl) {
+// Initial webhook - start conversation
+app.post('/texml-webhook', async (req, res) => {
   try {
-    const conversation = conversations.get(callSessionId);
-    if (!conversation) {
-      console.error('ERROR: No conversation found for session:', callSessionId);
+    console.log('========================================');
+    console.log('📞 /texml-webhook ENDPOINT HIT');
+    console.log('========================================');
+    
+    const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
+    const callerPhone = req.body.From || req.query.From;
+    const callbackSource = req.body.CallbackSource || req.query.CallbackSource;
+    
+    console.log('Raw request data:', {
+      body: req.body,
+      query: req.query,
+      callSid,
+      callerPhone,
+      callbackSource
+    });
+    
+    // Ignore call-cost-events callbacks
+    if (callbackSource === 'call-cost-events') {
+      console.log('⚠️ Ignoring call-cost-events callback');
+      res.type('application/xml');
+      res.status(200);
+      res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       return;
     }
     
-    console.log('=== PROCESSING RECORDING ===');
-    console.log('Recording URL:', recordingUrl);
+    if (!callSid) {
+      console.error('❌ No CallSid found in request');
+      console.log('Available in body:', Object.keys(req.body));
+      console.log('Available in query:', Object.keys(req.query));
+      
+      // Still send a response to keep the call alive
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Hello, thank you for calling. Let me connect you.</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="2"
+    playBeep="false"
+  />
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+      return;
+    }
     
-    // Transcribe with Whisper
-    console.log('Starting transcription...');
+    console.log(`📱 From: ${callerPhone}`);
+    console.log(`🆔 Call SID: ${callSid}`);
+    
+    // Initialize conversation with greeting
+    const conversationHistory = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
+    ];
+    
+    conversations.set(callSid, {
+      history: conversationHistory,
+      phone: callerPhone,
+      startTime: new Date().toISOString(),
+      data: {}
+    });
+    
+    // Speak the greeting
+    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
+  <Pause length="1"/>
+  <Say voice="Polly.Joanna" language="en-US">First, can you tell me the date of the accident?</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="2"
+    playBeep="false"
+  />
+</Response>`;
+    
+    console.log('✅ Sending greeting XML response');
+    console.log('Response length:', texmlResponse.length);
+    
+    res.type('application/xml');
+    res.status(200);
+    res.send(texmlResponse);
+    
+    console.log('✅ Response sent successfully');
+    console.log('========================================');
+    
+  } catch (error) {
+    console.error('========================================');
+    console.error('❌ ERROR in /texml-webhook');
+    console.error('========================================');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('========================================');
+    
+    try {
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Sorry, there was an error. Please try again later.</Say>
+  <Hangup/>
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+    } catch (sendError) {
+      console.error('❌ Failed to send error response:', sendError);
+      res.status(500).send('Internal Server Error');
+    }
+  }
+});
+
+// Handle user speech input
+app.post('/process-speech', async (req, res) => {
+  try {
+    console.log('========================================');
+    console.log('🎤 /process-speech ENDPOINT HIT');
+    console.log('========================================');
+    
+    const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
+    const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
+    
+    console.log(`📞 Call SID: ${callSid}`);
+    console.log(`🎧 Recording URL: ${recordingUrl}`);
+    
+    if (!callSid) {
+      console.error('❌ No CallSid in request');
+      throw new Error('No CallSid in request');
+    }
+    
+    const conversation = conversations.get(callSid);
+    if (!conversation) {
+      console.error('❌ Conversation not found for CallSid:', callSid);
+      console.log('Available conversations:', Array.from(conversations.keys()));
+      
+      // Create a new conversation if it doesn't exist
+      console.log('⚠️ Creating new conversation for missing CallSid');
+      const conversationHistory = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
+      ];
+      
+      conversations.set(callSid, {
+        history: conversationHistory,
+        phone: req.body.From || 'unknown',
+        startTime: new Date().toISOString(),
+        data: {}
+      });
+    }
+    
+    const currentConversation = conversations.get(callSid);
+    
+    if (!recordingUrl) {
+      console.warn('⚠️ No recording URL provided, using placeholder');
+      // Continue with empty input
+      const gptResponse = await getGPTResponse(currentConversation.history);
+      currentConversation.history.push({ role: 'user', content: '[no audio]' });
+      currentConversation.history.push({ role: 'assistant', content: gptResponse });
+      
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="2"
+    playBeep="false"
+  />
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+      return;
+    }
+    
+    console.log(`🎧 Transcribing audio...`);
+    
     let userInput;
     try {
       userInput = await transcribeWithWhisper(recordingUrl);
-      console.log('RAW TRANSCRIPTION RESULT:', JSON.stringify(userInput));
-      console.log('Transcription length:', userInput?.length || 0);
-    } catch (transcribeError) {
-      console.error('TRANSCRIPTION FAILED:', transcribeError.message);
-      console.error('Error details:', transcribeError.response?.data || transcribeError);
-      // Ask user to repeat
-      await speakToCall(callControlId, "I'm sorry, I didn't catch that. Could you please repeat your answer?");
-      setTimeout(async () => {
-        await startRecording(callControlId, callSessionId);
-      }, 100);
-      return;
+      console.log(`✅ User said: "${userInput}"`);
+    } catch (transcriptionError) {
+      console.error('❌ Transcription failed:', transcriptionError.message);
+      console.error('Transcription error stack:', transcriptionError.stack);
+      userInput = "[unclear audio]";
     }
     
-    // Check if transcription is empty or just whitespace
-    if (!userInput || !userInput.trim()) {
-      console.error('*** EMPTY TRANSCRIPTION DETECTED ***');
-      console.log('Raw value:', JSON.stringify(userInput));
-      await speakToCall(callControlId, "I didn't hear anything. Could you please speak your answer again?");
-      setTimeout(async () => {
-        await startRecording(callControlId, callSessionId);
-      }, 100);
-      return;
-    }
+    // Add user message to history
+    currentConversation.history.push({
+      role: 'user',
+      content: userInput
+    });
     
-    console.log('✓ User said:', userInput);
+    // Get GPT-4 response
+    const gptResponse = await getGPTResponse(currentConversation.history);
+    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
     
-    // Add to history
-    conversation.history.push({ role: 'user', content: userInput });
-    console.log('Conversation history now has', conversation.history.length, 'messages');
+    // Add assistant message to history
+    currentConversation.history.push({
+      role: 'assistant',
+      content: gptResponse
+    });
     
-    // Get GPT response
-    console.log('Getting GPT response...');
-    let gptResponse;
-    try {
-      gptResponse = await getGPTResponse(conversation.history);
-      console.log('✓ GPT said:', gptResponse);
-    } catch (gptError) {
-      console.error('GPT API FAILED:', gptError.message);
-      console.error('GPT error details:', gptError.response?.data || gptError);
-      await speakToCall(callControlId, "I'm sorry, I'm having trouble processing that. Could you please repeat your answer?");
-      setTimeout(async () => {
-        await startRecording(callControlId, callSessionId);
-      }, 100);
-      return;
-    }
-    
-    // Add to history
-    conversation.history.push({ role: 'assistant', content: gptResponse });
-    
-    // Check if done
+    // Check if conversation is complete
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
-      await speakToCall(callControlId, "Thank you! A truck accident attorney will contact you within 24 hours. Have a great day!");
+      console.log('✅ Conversation complete - saving to Airtable');
       
-      setTimeout(async () => {
-        await hangupCall(callControlId);
-      }, 3000);
+      // Save to Airtable
+      if (airtableBase) {
+        try {
+          await saveToAirtable(currentConversation);
+        } catch (err) {
+          console.error('⚠️ Airtable save failed:', err.message);
+          console.error('Airtable error stack:', err.stack);
+        }
+      } else {
+        console.log('⚠️ Airtable not configured, skipping save');
+      }
+      
+      // Clean up
+      conversations.delete(callSid);
+      
+      // Thank and hang up
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!</Say>
+  <Hangup/>
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
       
     } else {
       // Continue conversation
-      await speakToCall(callControlId, gptResponse);
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
+  <Record 
+    action="/process-speech" 
+    method="POST" 
+    maxLength="60" 
+    timeout="2"
+    playBeep="false"
+  />
+</Response>`;
       
-      // Record next response
-      setTimeout(async () => {
-        await startRecording(callControlId, callSessionId);
-      }, 100);
+      console.log('✅ Continuing conversation');
+      console.log('========================================');
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
     }
     
   } catch (error) {
-    console.error('PROCESSING ERROR:', error.message);
-    console.error('Stack:', error.stack);
-    // Try to recover
+    console.error('========================================');
+    console.error('❌ ERROR in /process-speech');
+    console.error('========================================');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('========================================');
+    
     try {
-      const conversation = conversations.get(callSessionId);
-      if (conversation) {
-        await speakToCall(conversation.callControlId, "I'm sorry, something went wrong. Could you please repeat your answer?");
-        setTimeout(async () => {
-          await startRecording(conversation.callControlId, callSessionId);
-        }, 100);
-      }
-    } catch (recoveryError) {
-      console.error('Recovery failed:', recoveryError.message);
+      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
+  <Hangup/>
+</Response>`;
+      
+      res.type('application/xml');
+      res.status(200);
+      res.send(texmlResponse);
+    } catch (sendError) {
+      console.error('❌ Failed to send error response:', sendError);
+      res.status(500).send('Internal Server Error');
     }
   }
-}
+});
 
-// Answer call
-async function answerCall(callControlId) {
+// Get response from GPT-4
+async function getGPTResponse(conversationHistory) {
   try {
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
-      {},
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY environment variable is not set');
+    }
+    
+    console.log('🤖 Calling GPT-4 API...');
+    const response = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
       {
-        headers: {
-          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
-      }
-    );
-    console.log('Call answered');
-  } catch (error) {
-    console.error('Error answering call:', error.message);
-    throw error;
-  }
-}
-
-// Speak to caller
-async function speakToCall(callControlId, text) {
-  try {
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-      {
-        payload: text,
-        voice: 'female',
-        language: 'en-US'
+        model: 'gpt-4',
+        messages: conversationHistory,
+        max_tokens: 150,
+        temperature: 0.7
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 10000
+        timeout: 30000
       }
     );
-    console.log('Speaking:', text.substring(0, 50) + '...');
+    
+    const content = response.data.choices[0].message.content.trim();
+    console.log('✅ GPT-4 response received');
+    return content;
+    
   } catch (error) {
-    console.error('Error speaking:', error.message);
+    console.error('❌ GPT-4 error:', error.response?.data || error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
+    if (error.stack) {
+      console.error('GPT-4 error stack:', error.stack);
+    }
     throw error;
   }
 }
 
-// Start recording
-async function startRecording(callControlId, callSessionId) {
-  try {
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
-      {
-        format: 'mp3',
-        channels: 'single',
-        max_length: 20,
-        timeout: 3
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
-      }
-    );
-    console.log('✓ Recording started for session:', callSessionId);
-  } catch (error) {
-    console.error('ERROR starting recording:', error.message);
-    console.error('Recording error details:', error.response?.data || error);
-    throw error;
-  }
-}
-
-// Hangup call
-async function hangupCall(callControlId) {
-  try {
-    await axios.post(
-      `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-      {},
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
-      }
-    );
-    console.log('Call hung up');
-  } catch (error) {
-    console.error('Error hanging up:', error.message);
-    throw error;
-  }
-}
-
-// Transcribe with Whisper
+// Transcribe audio with OpenAI Whisper
 async function transcribeWithWhisper(audioUrl) {
-  console.log('Downloading audio from:', audioUrl);
-  
-  let audioResponse;
   try {
-    audioResponse = await axios.get(audioUrl, { 
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY environment variable is not set');
+    }
+    
+    console.log(`📥 Downloading audio from: ${audioUrl}`);
+    
+    const audioResponse = await axios.get(audioUrl, { 
       responseType: 'arraybuffer',
-      timeout: 20000
+      timeout: 30000
     });
-    console.log('✓ Audio downloaded, size:', audioResponse.data.byteLength, 'bytes');
-  } catch (error) {
-    console.error('ERROR downloading audio:', error.message);
-    console.error('Status:', error.response?.status, error.response?.statusText);
-    throw new Error(`Failed to download audio: ${error.message}`);
-  }
-  
-  const audioBuffer = Buffer.from(audioResponse.data);
-  
-  const formData = new FormData();
-  formData.append('file', audioBuffer, {
-    filename: 'recording.mp3',
-    contentType: 'audio/mpeg'
-  });
-  formData.append('model', 'whisper-1');
-  formData.append('language', 'en');
-  
-  console.log('Sending transcription request to OpenAI...');
-  let response;
-  try {
-    response = await axios.post(
+    
+    const audioBuffer = Buffer.from(audioResponse.data);
+    console.log(`✅ Downloaded ${audioBuffer.length} bytes`);
+    
+    const formData = new FormData();
+    formData.append('file', audioBuffer, {
+      filename: 'recording.mp3',
+      contentType: 'audio/mpeg'
+    });
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'en');
+    
+    console.log(`🎤 Sending to Whisper API...`);
+    
+    const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
       formData,
       {
@@ -369,77 +461,27 @@ async function transcribeWithWhisper(audioUrl) {
         timeout: 30000
       }
     );
-    console.log('✓ Transcription API response received');
+    
+    console.log('✅ Transcription received');
+    return response.data.text.trim();
+    
   } catch (error) {
-    console.error('ERROR: OpenAI transcription API failed');
-    console.error('Error message:', error.message);
-    console.error('Status code:', error.response?.status);
-    console.error('Error details:', error.response?.data || 'No response data');
-    
-    if (error.response?.status === 401) {
-      throw new Error('OpenAI API key is invalid or expired');
+    console.error('❌ Whisper error:', error.response?.data || error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
     }
-    throw error;
-  }
-  
-  const transcribedText = response.data?.text?.trim();
-  
-  if (!transcribedText) {
-    console.error('*** WARNING: Transcription returned empty result! ***');
-    console.error('Full API response:', JSON.stringify(response.data, null, 2));
-    return '';
-  }
-  
-  return transcribedText;
-}
-
-// Get GPT response
-async function getGPTResponse(conversationHistory) {
-  console.log('Sending GPT request with', conversationHistory.length, 'messages');
-  
-  try {
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o',
-        messages: conversationHistory,
-        max_tokens: 100,
-        temperature: 0.7
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 20000
-      }
-    );
-    
-    const content = response.data.choices[0]?.message?.content?.trim();
-    
-    if (!content) {
-      console.error('WARNING: GPT returned empty response!');
-      console.error('Full API response:', JSON.stringify(response.data, null, 2));
-      return "I'm sorry, could you please repeat that?";
-    }
-    
-    return content;
-  } catch (error) {
-    console.error('ERROR: OpenAI GPT API failed');
-    console.error('Error message:', error.message);
-    console.error('Status code:', error.response?.status);
-    console.error('Error details:', error.response?.data || 'No response data');
-    
-    if (error.response?.status === 401) {
-      throw new Error('OpenAI API key is invalid or expired');
+    if (error.stack) {
+      console.error('Whisper error stack:', error.stack);
     }
     throw error;
   }
 }
 
-// Save to Airtable
+// Save conversation to Airtable
 async function saveToAirtable(conversation) {
   try {
+    // Extract key info from conversation
     const fullTranscript = conversation.history
       .filter(msg => msg.role !== 'system')
       .map(msg => `${msg.role}: ${msg.content}`)
@@ -450,22 +492,88 @@ async function saveToAirtable(conversation) {
       "Call Start": conversation.startTime,
       "Full Transcript": fullTranscript,
       "Status": "New",
-      "Qualified": "Yes"
+      "Qualified": "Yes" // Can add logic to determine this
     });
     
-    console.log('✓ Saved to Airtable');
+    console.log('✅ Saved to Airtable');
   } catch (error) {
-    console.error('Airtable error:', error.message);
-    console.error('Airtable error details:', error.response?.data || error);
+    console.error('❌ Airtable save error:', error.message);
+    if (error.stack) {
+      console.error('Airtable error stack:', error.stack);
+    }
+    throw error;
   }
 }
 
+// Sanitize text for speech
+function sanitizeForSpeech(text) {
+  return text
+    .replace(/[<>]/g, '')
+    .replace(/&/g, 'and')
+    .replace(/CONVERSATION_COMPLETE/g, '')
+    .substring(0, 500);
+}
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('========================================');
+  console.error('❌ UNHANDLED ERROR MIDDLEWARE');
+  console.error('========================================');
+  console.error('Error:', err);
+  console.error('Stack:', err.stack);
+  console.error('Request path:', req.path);
+  console.error('Request method:', req.method);
+  console.error('========================================');
+  
+  try {
+    res.type('application/xml');
+    res.status(200);
+    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">An error occurred. Goodbye.</Say><Hangup/></Response>');
+  } catch (sendError) {
+    console.error('❌ Failed to send error response:', sendError);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log('VOICE API AGENT STARTED');
-  console.log('Port:', PORT);
-  console.log('OpenAI:', process.env.OPENAI_API_KEY ? 'Set' : 'Missing');
-  console.log('Telnyx:', process.env.TELNYX_API_KEY ? 'Set' : 'Missing');
-  console.log('Airtable:', airtableBase ? 'Connected' : 'Not configured');
+
+// Verify server starts
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('========================================');
+  console.log('🚀 GPT-4 VOICE AGENT STARTED');
+  console.log('========================================');
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🌐 Listening on: 0.0.0.0:${PORT}`);
+  console.log(`📞 Webhook: /texml-webhook`);
+  console.log(`🎤 Speech Handler: /process-speech`);
+  console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
+  console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
+  console.log('========================================');
+  console.log('✅ Server is ready to receive requests');
+  console.log('========================================');
 });
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('========================================');
+  console.error('❌ UNCAUGHT EXCEPTION');
+  console.error('========================================');
+  console.error('Error:', error);
+  console.error('Stack:', error.stack);
+  console.error('========================================');
+  // Don't exit - let the process continue
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('========================================');
+  console.error('❌ UNHANDLED REJECTION');
+  console.error('========================================');
+  console.error('Promise:', promise);
+  console.error('Reason:', reason);
+  if (reason instanceof Error) {
+    console.error('Stack:', reason.stack);
+  }
+  console.error('========================================');
+});
+
