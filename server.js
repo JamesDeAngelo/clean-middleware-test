@@ -5,6 +5,7 @@ import Airtable from 'airtable';
 const app = express();
 app.use(express.json());
 
+// Intake fields in order
 const REQUIRED_FIELDS = [
   { key: 'accidentDate', question: 'What date was the accident?' },
   { key: 'location', question: 'Where did it happen? (city, state, road)' },
@@ -14,17 +15,19 @@ const REQUIRED_FIELDS = [
   { key: 'phoneNumber', question: 'What is the best phone number to reach you?' }
 ];
 
-const FIELD_PROMPT = `You are extracting details from a truck accident intake call.
-Given the full transcript so far and the caller's latest answer, output JSON like:
+// Prompt used to map the caller’s answer → intake fields
+const FIELD_PROMPT = `You extract structured data from a truck accident intake call.
+Given the conversation so far and ONLY the caller's latest answer, return JSON:
 {"field_updates":{"fieldKey":"value"}, "needs_clarification":false}
 
 Rules:
 - fieldKey must be one of: accidentDate, location, description, injuries, fullName, phoneNumber.
-- Only set keys the caller clearly answered; leave others absent.
-- Same key may be updated multiple times; store the freshest value.
-- If the caller's answer was unclear or unrelated, set "needs_clarification":true, otherwise false.
-Keep explanations out of the JSON.`;
+- Include only keys clearly answered in the latest message. Omit everything else.
+- Same field can be updated multiple times (use the latest value).
+- If the caller's answer is unclear/unrelated, set "needs_clarification":true.
+- No explanations, just JSON.`;
 
+// Axios clients
 const telnyx = axios.create({
   baseURL: 'https://api.telnyx.com/v2',
   headers: {
@@ -39,39 +42,40 @@ const airtableBase =
     ? new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID)
     : null;
 
+// Track conversations by call_session_id
 const sessions = new Map();
 
-app.get('/', (_, res) => res.send('Voice API agent running'));
+app.get('/', (_req, res) => res.send('Voice API agent running'));
 
+// Telnyx webhook
 app.post('/telnyx-webhook', async (req, res) => {
   const event = req.body?.data;
-  res.status(200).send('OK');
+  res.status(200).send('OK'); // always ack quickly
 
   if (!event) return;
 
   try {
     switch (event.event_type) {
       case 'call.initiated':
-        await onCallInitiated(event);
-        break;
-      case 'call.speak.ended':
-        await onSpeakEnded(event);
+        await handleCallInitiated(event);
         break;
       case 'call.gather.ended':
-        await onGatherEnded(event);
+        await handleGatherEnded(event);
         break;
       case 'call.hangup':
-        await onHangup(event);
+        await handleHangup(event);
         break;
       default:
         break;
     }
   } catch (err) {
-    console.error('Webhook error:', err.message, err.response?.data);
+    console.error('Webhook handler error:', err.message, err.response?.data);
   }
 });
 
-async function onCallInitiated(event) {
+// ----- handlers -----
+
+async function handleCallInitiated(event) {
   const { call_control_id: callControlId, call_session_id: sessionId, from } = event.payload;
 
   sessions.set(sessionId, {
@@ -84,67 +88,51 @@ async function onCallInitiated(event) {
   });
 
   await telnyx.post(`/calls/${callControlId}/actions/answer`);
-  await speak(callControlId, "Hi, thanks for calling. I’ll gather a few quick details about your truck accident. What date was the accident?");
+
+  await speakAndListen(sessionId, "Hi, thanks for calling. I’ll grab a few quick details. What date was the accident?");
 }
 
-async function onSpeakEnded(event) {
-  const session = sessions.get(event.payload.call_session_id);
-  if (!session || session.gathering) return;
-  session.gathering = true;
-  await wait(200);
-  await startSpeechGather(session.callControlId);
-  session.gathering = false;
-}
-
-async function onGatherEnded(event) {
+async function handleGatherEnded(event) {
   const sessionId = event.payload.call_session_id;
   const session = sessions.get(sessionId);
   if (!session) return;
 
+  session.gathering = false;
+
   const transcript = event.payload.speech_result?.transcript?.trim();
   if (!transcript) {
-    await speak(session.callControlId, "I didn't catch that. Could you say it again?");
-    await wait(200);
-    return startSpeechGather(session.callControlId);
+    return speakAndListen(sessionId, "I didn't catch that. Could you say it again?");
   }
 
   session.history.push({ role: 'user', content: transcript });
 
   const update = await extractFields(session.history, transcript);
   if (!update) {
-    await speak(session.callControlId, "Sorry, could you repeat that?");
-    await wait(200);
-    return startSpeechGather(session.callControlId);
+    return speakAndListen(sessionId, "Sorry, could you repeat that?");
   }
 
   if (update.field_updates) {
-    Object.entries(update.field_updates).forEach(([key, value]) => {
+    for (const [key, value] of Object.entries(update.field_updates)) {
       session.fields[key] = value;
-    });
+    }
   }
 
-  let nextQuestion;
-  if (update.needs_clarification) {
-    nextQuestion = "I’m sorry, I didn’t understand that. Could you clarify?";
-  } else {
-    nextQuestion = getNextQuestion(session.fields);
-  }
+  const nextQuestion = update.needs_clarification
+    ? "I’m sorry, I didn’t understand that. Could you clarify?"
+    : getNextQuestion(session.fields);
 
   if (!nextQuestion) {
-    await speak(
-      session.callControlId,
-      "Thank you for sharing those details. A truck accident attorney will contact you within 24 hours."
-    );
+    await speak(session.callControlId, "Thanks for sharing those details. A truck accident attorney will contact you within 24 hours.");
     await wait(800);
     await telnyx.post(`/calls/${session.callControlId}/actions/hangup`);
     return;
   }
 
   session.history.push({ role: 'assistant', content: nextQuestion });
-  await speak(session.callControlId, nextQuestion);
+  await speakAndListen(sessionId, nextQuestion);
 }
 
-async function onHangup(event) {
+async function handleHangup(event) {
   const sessionId = event.payload.call_session_id;
   const session = sessions.get(sessionId);
   if (!session) return;
@@ -156,6 +144,8 @@ async function onHangup(event) {
   sessions.delete(sessionId);
 }
 
+// ----- helpers -----
+
 function getNextQuestion(fields) {
   for (const field of REQUIRED_FIELDS) {
     if (!fields[field.key]) return field.question;
@@ -163,11 +153,43 @@ function getNextQuestion(fields) {
   return null;
 }
 
-async function extractFields(history, lastAnswer) {
-  const messages = [
-    { role: 'system', content: FIELD_PROMPT },
-    { role: 'user', content: `Conversation so far:\n${history.map(m => `${m.role}: ${m.content}`).join('\n')}\n\nLatest answer: "${lastAnswer}"` }
-  ];
+async function speakAndListen(sessionId, text) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  await speak(session.callControlId, text);
+  await wait(200); // let audio queue
+  await startSpeechGather(sessionId);
+}
+
+async function speak(callControlId, text) {
+  await telnyx.post(`/calls/${callControlId}/actions/speak`, {
+    payload: text,
+    voice: 'female',
+    language: 'en-US'
+  });
+  console.log('Speaking:', text);
+}
+
+async function startSpeechGather(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session || session.gathering) return;
+
+  session.gathering = true;
+
+  await telnyx.post(`/calls/${session.callControlId}/actions/gather_using_speech`, {
+    language: 'en-US',
+    interim_results: false,
+    speech_timeout: 0.6,
+    max_duration: 30,
+    profanity_filter: true
+  });
+
+  console.log('Gather started for session', sessionId);
+}
+
+async function extractFields(history, latestAnswer) {
+  const convo = history.map(m => `${m.role}: ${m.content}`).join('\n');
 
   try {
     const { data } = await axios.post(
@@ -192,7 +214,13 @@ async function extractFields(history, lastAnswer) {
             }
           }
         },
-        messages,
+        messages: [
+          { role: 'system', content: FIELD_PROMPT },
+          {
+            role: 'user',
+            content: `Conversation so far:\n${convo}\n\nLatest caller answer:\n${latestAnswer}`
+          }
+        ],
         max_tokens: 200,
         temperature: 0
       },
@@ -207,26 +235,6 @@ async function extractFields(history, lastAnswer) {
     console.error('extractFields error:', err.message, err.response?.data);
     return null;
   }
-}
-
-async function speak(callControlId, text) {
-  await telnyx.post(`/calls/${callControlId}/actions/speak`, {
-    payload: text,
-    voice: 'female',
-    language: 'en-US'
-  });
-  console.log('Speaking:', text);
-}
-
-async function startSpeechGather(callControlId) {
-  await telnyx.post(`/calls/${callControlId}/actions/gather_using_speech`, {
-    language: 'en-US',
-    interim_results: false,
-    speech_timeout: 0.6,
-    max_duration: 30,
-    profanity_filter: true
-  });
-  console.log('Gather started');
 }
 
 async function saveToAirtable(session) {
