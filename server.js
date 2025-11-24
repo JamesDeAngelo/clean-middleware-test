@@ -5,7 +5,6 @@ import Airtable from 'airtable';
 const app = express();
 app.use(express.json());
 
-// Intake fields in order
 const REQUIRED_FIELDS = [
   { key: 'accidentDate', question: 'What date was the accident?' },
   { key: 'location', question: 'Where did it happen? (city, state, road)' },
@@ -15,19 +14,18 @@ const REQUIRED_FIELDS = [
   { key: 'phoneNumber', question: 'What is the best phone number to reach you?' }
 ];
 
-// Prompt used to map the caller’s answer → intake fields
 const FIELD_PROMPT = `You extract structured data from a truck accident intake call.
-Given the conversation so far and ONLY the caller's latest answer, return JSON:
+Given the transcript so far and ONLY the caller's latest answer, return JSON:
 {"field_updates":{"fieldKey":"value"}, "needs_clarification":false}
 
 Rules:
 - fieldKey must be one of: accidentDate, location, description, injuries, fullName, phoneNumber.
-- Include only keys clearly answered in the latest message. Omit everything else.
+- Include only keys clearly answered in the latest message.
 - Same field can be updated multiple times (use the latest value).
 - If the caller's answer is unclear/unrelated, set "needs_clarification":true.
 - No explanations, just JSON.`;
 
-// Axios clients
+// API clients
 const telnyx = axios.create({
   baseURL: 'https://api.telnyx.com/v2',
   headers: {
@@ -42,15 +40,13 @@ const airtableBase =
     ? new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID)
     : null;
 
-// Track conversations by call_session_id
 const sessions = new Map();
 
 app.get('/', (_req, res) => res.send('Voice API agent running'));
 
-// Telnyx webhook
 app.post('/telnyx-webhook', async (req, res) => {
   const event = req.body?.data;
-  res.status(200).send('OK'); // always ack quickly
+  res.status(200).send('OK');
 
   if (!event) return;
 
@@ -73,8 +69,6 @@ app.post('/telnyx-webhook', async (req, res) => {
   }
 });
 
-// ----- handlers -----
-
 async function handleCallInitiated(event) {
   const { call_control_id: callControlId, call_session_id: sessionId, from } = event.payload;
 
@@ -83,13 +77,11 @@ async function handleCallInitiated(event) {
     phone: from,
     startTime: new Date().toISOString(),
     fields: {},
-    history: [],
-    gathering: false
+    history: []
   });
 
   await telnyx.post(`/calls/${callControlId}/actions/answer`);
-
-  await speakAndListen(sessionId, "Hi, thanks for calling. I’ll grab a few quick details. What date was the accident?");
+  await speakAndListen(callControlId, "Hi, thanks for calling. I’ll grab a few quick details. What date was the accident?");
 }
 
 async function handleGatherEnded(event) {
@@ -97,18 +89,16 @@ async function handleGatherEnded(event) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  session.gathering = false;
-
   const transcript = event.payload.speech_result?.transcript?.trim();
   if (!transcript) {
-    return speakAndListen(sessionId, "I didn't catch that. Could you say it again?");
+    return speakAndListen(session.callControlId, "I didn't catch that. Could you say it again?");
   }
 
   session.history.push({ role: 'user', content: transcript });
 
   const update = await extractFields(session.history, transcript);
   if (!update) {
-    return speakAndListen(sessionId, "Sorry, could you repeat that?");
+    return speakAndListen(session.callControlId, "Sorry, could you repeat that?");
   }
 
   if (update.field_updates) {
@@ -129,7 +119,7 @@ async function handleGatherEnded(event) {
   }
 
   session.history.push({ role: 'assistant', content: nextQuestion });
-  await speakAndListen(sessionId, nextQuestion);
+  await speakAndListen(session.callControlId, nextQuestion);
 }
 
 async function handleHangup(event) {
@@ -144,8 +134,6 @@ async function handleHangup(event) {
   sessions.delete(sessionId);
 }
 
-// ----- helpers -----
-
 function getNextQuestion(fields) {
   for (const field of REQUIRED_FIELDS) {
     if (!fields[field.key]) return field.question;
@@ -153,13 +141,10 @@ function getNextQuestion(fields) {
   return null;
 }
 
-async function speakAndListen(sessionId, text) {
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  await speak(session.callControlId, text);
-  await wait(200); // let audio queue
-  await startSpeechGather(sessionId);
+async function speakAndListen(callControlId, prompt) {
+  await speak(callControlId, prompt);
+  await wait(200);
+  await startSpeechGather(callControlId);
 }
 
 async function speak(callControlId, text) {
@@ -171,21 +156,15 @@ async function speak(callControlId, text) {
   console.log('Speaking:', text);
 }
 
-async function startSpeechGather(sessionId) {
-  const session = sessions.get(sessionId);
-  if (!session || session.gathering) return;
-
-  session.gathering = true;
-
-  await telnyx.post(`/calls/${session.callControlId}/actions/gather_using_speech`, {
+async function startSpeechGather(callControlId) {
+  console.log('Starting gather for', callControlId);
+  await telnyx.post(`/calls/${callControlId}/actions/gather_using_speech`, {
     language: 'en-US',
     interim_results: false,
     speech_timeout: 0.6,
     max_duration: 30,
     profanity_filter: true
   });
-
-  console.log('Gather started for session', sessionId);
 }
 
 async function extractFields(history, latestAnswer) {
