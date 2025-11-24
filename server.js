@@ -1,4 +1,3 @@
-// server.js
 import express from 'express';
 import axios from 'axios';
 import Airtable from 'airtable';
@@ -7,19 +6,15 @@ const app = express();
 app.use(express.json());
 
 const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases.
-Ask, in order:
-1. Date of the accident
-2. Location (city, state, road)
-3. Description of what happened
-4. Were there injuries?
-5. Their full name
-6. Their phone number
-RULES:
-- Keep responses SHORT (1-2 sentences max)
-- Be conversational and empathetic
-- If they already gave info, skip the question
-- When you have all 6 pieces, respond with exactly: "CONVERSATION_COMPLETE"`;
+Always respond with valid JSON exactly like:
+{"assistant_reply":"<spoken response>","is_complete":false}
+Workflow:
+1. Ask (in order) date of accident, location (city/state/road), description, injuries, full name, phone number.
+2. Use 1-2 conversational, empathetic sentences.
+3. Skip any question the caller already answered.
+4. Only when ALL six data points are confirmed set "is_complete":true and give a warm wrap‑up message. Otherwise leave it false.`;
 
+// Telnyx client
 const telnyx = axios.create({
   baseURL: 'https://api.telnyx.com/v2',
   headers: {
@@ -29,18 +24,23 @@ const telnyx = axios.create({
   timeout: 10000
 });
 
-const airtableBase = process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID
-  ? new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID)
-  : null;
+// Airtable setup
+const airtableBase =
+  process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID
+    ? new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID)
+    : null;
 
+// Conversation store
 const sessions = new Map();
 
-app.get('/', (_, res) => res.send('Voice API Agent running'));
+app.get('/', (_req, res) => res.send('Voice API agent running'));
 
 app.post('/telnyx-webhook', async (req, res) => {
   const event = req.body?.data;
   const type = event?.event_type;
-  res.status(200).send('OK'); // respond quickly so Telnyx doesn’t retry
+  res.status(200).send('OK'); // acknowledge immediately
+
+  if (!event) return;
 
   try {
     switch (type) {
@@ -60,7 +60,7 @@ app.post('/telnyx-webhook', async (req, res) => {
         break;
     }
   } catch (err) {
-    console.error('Webhook handling error:', err.message, err.response?.data);
+    console.error('Webhook error:', err.message, err.response?.data);
   }
 });
 
@@ -74,28 +74,27 @@ async function handleCallInitiated(event) {
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'assistant',
-        content: "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?"
+        content:
+          "Hi, thanks for calling. I'm here to help log your truck accident case. Can you tell me the date of the accident?"
       }
     ],
     startTime: new Date().toISOString(),
-    nextGatherPending: false
+    gathering: false
   });
 
   await telnyx.post(`/calls/${callControlId}/actions/answer`);
   await speak(callControlId, sessions.get(sessionId).history.at(-1).content);
-  // gather starts after `call.speak.ended`
+  // gather starts after speak.ended
 }
 
 async function maybeStartGather(event) {
-  const sessionId = event.payload.call_session_id;
-  const session = sessions.get(sessionId);
-  if (!session || session.nextGatherPending) return;
+  const session = sessions.get(event.payload.call_session_id);
+  if (!session || session.gathering) return;
 
-  session.nextGatherPending = true;
-  // give Telnyx 200ms so audio playback fully stops
-  await wait(200);
+  session.gathering = true;
+  await wait(200); // ensure playback fully stops
   await startSpeechGather(session.callControlId);
-  session.nextGatherPending = false;
+  session.gathering = false;
 }
 
 async function handleGatherResult(event) {
@@ -103,29 +102,31 @@ async function handleGatherResult(event) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  const transcript =
-    event.payload.speech_result?.transcript ||
-    event.payload.recordings?.[0]?.transcription ||
-    '';
-
-  if (!transcript.trim()) {
+  const transcript = event.payload.speech_result?.transcript?.trim();
+  if (!transcript) {
     await speak(session.callControlId, "I didn't catch that. Could you please say it again?");
-    await wait(250);
+    await wait(200);
     return startSpeechGather(session.callControlId);
   }
 
   session.history.push({ role: 'user', content: transcript });
 
-  const reply = await getGPTResponse(session.history);
-  session.history.push({ role: 'assistant', content: reply });
+  const agentTurn = await getAgentTurn(session.history);
+  if (!agentTurn) {
+    await speak(session.callControlId, "I'm sorry, could you repeat that?");
+    await wait(200);
+    return startSpeechGather(session.callControlId);
+  }
 
-  if (reply.includes('CONVERSATION_COMPLETE')) {
-    await speak(session.callControlId, "Thank you! A truck accident attorney will contact you within 24 hours.");
+  session.history.push({ role: 'assistant', content: agentTurn.assistant_reply });
+  await speak(session.callControlId, agentTurn.assistant_reply);
+
+  if (agentTurn.is_complete === true) {
     await wait(800);
     await telnyx.post(`/calls/${session.callControlId}/actions/hangup`);
   } else {
-    await speak(session.callControlId, reply);
-    // gather auto-starts on speak.ended
+    await wait(200);
+    await startSpeechGather(session.callControlId);
   }
 }
 
@@ -140,13 +141,17 @@ async function finalizeConversation(event) {
       .map(msg => `${msg.role}: ${msg.content}`)
       .join('\n');
 
-    await airtableBase('Leads').create({
-      'Phone Number': session.phone,
-      'Call Start': session.startTime,
-      'Full Transcript': transcript,
-      Status: 'New',
-      Qualified: 'Yes'
-    });
+    try {
+      await airtableBase('Leads').create({
+        'Phone Number': session.phone,
+        'Call Start': session.startTime,
+        'Full Transcript': transcript,
+        Status: 'New',
+        Qualified: 'Yes'
+      });
+    } catch (err) {
+      console.error('Airtable error:', err.message, err.response?.data);
+    }
   }
 
   sessions.delete(sessionId);
@@ -165,23 +170,57 @@ async function startSpeechGather(callControlId) {
   await telnyx.post(`/calls/${callControlId}/actions/gather_using_speech`, {
     language: 'en-US',
     interim_results: false,
-    speech_timeout: 0.6,
+    speech_timeout: 0.6, // seconds of silence before stopping
     max_duration: 30,
     profanity_filter: true
   });
   console.log('Speech gather started');
 }
 
-async function getGPTResponse(history) {
-  const { data } = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    { model: 'gpt-4o-mini', messages: history, max_tokens: 120, temperature: 0.6 },
-    { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, timeout: 12000 }
-  );
-  return data.choices?.[0]?.message?.content?.trim() || "I'm sorry, could you say that again?";
+async function getAgentTurn(history) {
+  try {
+    const { data } = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        model: 'gpt-4o-mini',
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'intake_turn',
+            schema: {
+              type: 'object',
+              required: ['assistant_reply', 'is_complete'],
+              properties: {
+                assistant_reply: { type: 'string' },
+                is_complete: { type: 'boolean' }
+              },
+              additionalProperties: false
+            }
+          }
+        },
+        messages: history,
+        max_tokens: 180,
+        temperature: 0.5
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        timeout: 12000
+      }
+    );
+
+    return JSON.parse(data.choices?.[0]?.message?.content || '');
+  } catch (err) {
+    console.error('GPT turn error:', err.message, err.response?.data);
+    return null;
+  }
 }
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Voice API agent ready on ${PORT}`));
+app.listen(PORT, () => {
+  console.log('Voice API agent started on', PORT);
+  console.log('OpenAI key:', process.env.OPENAI_API_KEY ? 'set' : 'missing');
+  console.log('Telnyx key:', process.env.TELNYX_API_KEY ? 'set' : 'missing');
+  console.log('Airtable:', airtableBase ? 'enabled' : 'disabled');
+});
