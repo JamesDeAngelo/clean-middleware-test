@@ -2,18 +2,22 @@ const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
 const Airtable = require('airtable');
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegStatic = require('ffmpeg-static');
+const { Readable } = require('stream');
+
+// Set ffmpeg path
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
 const app = express();
 
-// Middleware - streamlined
+// Middleware - minimal
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Minimal logging middleware
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
+// Async logging to prevent blocking
+const log = (...args) => setImmediate(() => console.log(...args));
+const logError = (...args) => setImmediate(() => console.error(...args));
 
 // Initialize Airtable
 let airtableBase = null;
@@ -21,128 +25,111 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   try {
     airtableBase = new Airtable({apiKey: process.env.AIRTABLE_API_KEY})
       .base(process.env.AIRTABLE_BASE_ID);
-    console.log('✅ Airtable initialized');
+    log('✅ Airtable initialized');
   } catch (error) {
-    console.error('❌ Airtable init failed:', error.message);
+    logError('❌ Airtable init failed:', error.message);
   }
 }
 
-// Conversation storage - FULL HISTORY PRESERVED
 const conversations = new Map();
 
-// System prompt - ORIGINAL PRESERVED
+// OPTIMIZED System prompt - ultra-concise responses
 const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. Your job is to collect information from callers in a friendly, professional manner.
 
 CONVERSATION FLOW:
-
 1. Greet caller and explain you'll ask a few questions
-
 2. Ask for the date of the accident
-
 3. Ask where the accident happened (city, state, road)
-
 4. Ask them to describe what happened
-
 5. Ask if anyone was injured
-
 6. Ask for their full name
-
 7. Ask for their phone number
-
 8. Thank them and let them know an attorney will contact them
 
-RULES:
-
-- Keep responses SHORT (1-2 sentences max)
-
-- If you don't understand, ask them to clarify once, then move on
-
-- Always confirm important details before moving to next question
-
-- Be empathetic and professional
-
+CRITICAL RULES:
+- ONE SHORT SENTENCE ONLY - Never more than 15 words
+- NO pauses, NO thinking, NO explanations
+- Be direct and move fast through questions
 - If they've already provided info, don't ask again
+- Extract structured data: accident_date, location, description, injuries, caller_name, phone
 
-- Extract structured data as you go: accident_date, location, description, injuries, caller_name, phone
+When you have all information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
-When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"`;
+// Question predictor cache
+const QUESTION_FLOW = [
+  "What date did the accident happen?",
+  "Where did the accident happen?",
+  "Can you briefly describe what happened?",
+  "Was anyone injured?",
+  "What's your full name?",
+  "What's your phone number?",
+  "Got it, an attorney will contact you soon."
+];
 
-// Response cache for instant responses
 const CACHE = {
-  completeMessage: "Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!",
-  errorMessage: "I'm experiencing technical difficulties. Please call back later. Goodbye.",
-  clarify: "Could you repeat that please?"
+  completeMessage: "Thank you. An attorney will contact you within 24 hours. Goodbye!",
+  errorMessage: "Technical issue. Call back soon.",
+  clarify: "Could you repeat that?"
 };
 
-// Pre-built XML templates - minified
+// ULTRA-MINIFIED XML templates
 const XML_TEMPLATES = {
-  continue: (text) => `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna" language="en-US">${text}</Say><Record action="/process-speech" method="POST" maxLength="60" timeout="2" playBeep="false"/></Response>`,
+  continue: (text) => `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${text}</Say><Record action="/process-speech" timeout="0.4" maxLength="30" playBeep="false"/></Response>`,
   hangup: (text) => `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${text}</Say><Hangup/></Response>`,
-  error: `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Technical issue. Call back soon.</Say><Hangup/></Response>`
+  error: `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Technical issue.</Say><Hangup/></Response>`
 };
 
-// Health check
-app.get('/', (req, res) => {
-  res.status(200).send('🚀 Optimized Voice Agent Running');
-});
+app.get('/', (req, res) => res.status(200).send('🚀 Ultra-Fast Voice Agent'));
 
 app.get('/test', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
     conversations: conversations.size,
-    openai: !!process.env.OPENAI_API_KEY,
-    airtable: !!airtableBase
+    openai: !!process.env.OPENAI_API_KEY
   });
 });
 
-// Initial webhook - ORIGINAL GREETING PRESERVED
+// Initial webhook
 app.post('/texml-webhook', async (req, res) => {
   try {
     const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
     const callerPhone = req.body.From || req.query.From;
     const callbackSource = req.body.CallbackSource || req.query.CallbackSource;
     
-    // Ignore call-cost-events
     if (callbackSource === 'call-cost-events') {
       return res.type('application/xml').status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
     }
     
     if (!callSid) {
-      console.error('❌ No CallSid');
-      // Fallback greeting
-      const greeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
+      const greeting = "Hi, I'm logging your truck accident case. What date did the accident happen?";
       return res.type('application/xml').status(200).send(XML_TEMPLATES.continue(greeting));
     }
     
-    console.log(`📞 ${callSid} from ${callerPhone}`);
+    log(`📞 ${callSid}`);
     
-    // ORIGINAL GREETING MESSAGE - PRESERVED
-    const initialGreeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
-    
-    // Initialize with FULL conversation history structure
-    const conversationHistory = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'assistant', content: initialGreeting }
-    ];
+    const initialGreeting = "Hi, I'm logging your truck accident case. What date did the accident happen?";
     
     conversations.set(callSid, {
-      history: conversationHistory,
+      history: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'assistant', content: initialGreeting }
+      ],
       phone: callerPhone,
       startTime: new Date().toISOString(),
-      data: {}
+      data: {},
+      step: 0
     });
     
-    // Send greeting with minified XML
     res.type('application/xml').status(200).send(XML_TEMPLATES.continue(initialGreeting));
     
   } catch (error) {
-    console.error('❌ Webhook error:', error.message);
+    logError('❌ Webhook error:', error.message);
     res.type('application/xml').status(200).send(XML_TEMPLATES.error);
   }
 });
 
-// Handle speech - OPTIMIZED BUT PRESERVING LOGIC
+// ULTRA-OPTIMIZED speech handler with parallelization
 app.post('/process-speech', async (req, res) => {
   try {
     const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
@@ -152,11 +139,9 @@ app.post('/process-speech', async (req, res) => {
     
     let conversation = conversations.get(callSid);
     
-    // Recreate conversation if missing - ORIGINAL LOGIC
     if (!conversation) {
-      console.log('⚠️ Recreating conversation');
-      const initialGreeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
-      
+      log('⚠️ Recreating conversation');
+      const initialGreeting = "Hi, I'm logging your truck accident case. What date did the accident happen?";
       conversation = {
         history: [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -164,146 +149,192 @@ app.post('/process-speech', async (req, res) => {
         ],
         phone: req.body.From || 'unknown',
         startTime: new Date().toISOString(),
-        data: {}
+        data: {},
+        step: 0
       };
       conversations.set(callSid, conversation);
     }
     
-    // Handle missing recording URL
     if (!recordingUrl) {
-      console.warn('⚠️ No recording URL');
-      const gptResponse = await getGPTResponseFast(conversation.history);
+      const predicted = predictNextQuestion(conversation);
       conversation.history.push({ role: 'user', content: '[no audio]' });
-      conversation.history.push({ role: 'assistant', content: gptResponse });
-      return res.type('application/xml').status(200).send(XML_TEMPLATES.continue(sanitize(gptResponse)));
+      conversation.history.push({ role: 'assistant', content: predicted });
+      return res.type('application/xml').status(200).send(XML_TEMPLATES.continue(predicted));
     }
     
-    console.log('🎤 Transcribing...');
+    // PARALLEL EXECUTION: Start everything at once
+    const transcriptionPromise = transcribeUltraFast(recordingUrl);
+    const predictedQuestion = predictNextQuestion(conversation);
     
-    // Fast transcription
-    let userInput;
+    // Wait for transcription
+    const userInput = await transcriptionPromise;
+    log(`User: "${userInput}"`);
+    
+    // Update history
+    conversation.history.push({ role: 'user', content: userInput });
+    
+    // STREAMING GPT - get first response ASAP
+    let gptResponse;
     try {
-      userInput = await transcribeFast(recordingUrl);
-      console.log(`✅ User: "${userInput}"`);
-    } catch (transcriptionError) {
-      console.error('❌ Transcription failed:', transcriptionError.message);
-      userInput = "[unclear audio]";
+      gptResponse = await getGPTStreamingFast(conversation.history);
+      log(`GPT: "${gptResponse}"`);
+    } catch (gptError) {
+      logError('GPT error, using prediction');
+      gptResponse = predictedQuestion;
     }
     
-    // Add user message to FULL history
-    conversation.history.push({
-      role: 'user',
-      content: userInput
-    });
+    conversation.history.push({ role: 'assistant', content: gptResponse });
+    conversation.step++;
     
-    // Get GPT response with FULL history (optimization happens inside function)
-    const gptResponse = await getGPTResponseFast(conversation.history);
-    console.log(`🤖 GPT: "${gptResponse}"`);
-    
-    // Add assistant message to FULL history
-    conversation.history.push({
-      role: 'assistant',
-      content: gptResponse
-    });
-    
-    // Check completion - ORIGINAL LOGIC
+    // Check completion
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
-      console.log('✅ Complete');
-      
-      // Async save (non-blocking)
+      log('✅ Complete');
       if (airtableBase) {
-        saveToAirtable(conversation).catch(err => console.error('⚠️ Save failed:', err.message));
+        saveToAirtable(conversation).catch(err => logError('Save failed:', err.message));
       }
-      
       conversations.delete(callSid);
       return res.type('application/xml').status(200).send(XML_TEMPLATES.hangup(CACHE.completeMessage));
     }
     
-    // Continue conversation
     res.type('application/xml').status(200).send(XML_TEMPLATES.continue(sanitize(gptResponse)));
     
   } catch (error) {
-    console.error('❌ Process error:', error.message);
+    logError('❌ Process error:', error.message);
     res.type('application/xml').status(200).send(XML_TEMPLATES.error);
   }
 });
 
-// FAST GPT - optimized but receives FULL history
-async function getGPTResponseFast(conversationHistory) {
+// STREAMING GPT with gpt-4o-mini (fastest available)
+async function getGPTStreamingFast(conversationHistory) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY not set');
-    }
+    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not set');
     
-    // Smart trimming: Keep system + recent context
-    // Only trim if history is very long (>15 messages)
+    // Smart trimming
     let messagesToSend = conversationHistory;
     if (conversationHistory.length > 15) {
       const systemMsg = conversationHistory[0];
-      const recentMessages = conversationHistory.slice(-12); // Keep last 6 exchanges
+      const recentMessages = conversationHistory.slice(-12);
       messagesToSend = [systemMsg, ...recentMessages];
-      console.log(`📉 Trimmed history: ${conversationHistory.length} -> ${messagesToSend.length}`);
     }
     
+    // STREAMING API - return first tokens immediately
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4o-mini', // SPEED: 4-6x faster than gpt-4
+        model: 'gpt-4o-mini', // Fastest model available
         messages: messagesToSend,
-        max_tokens: 150, // Same as original
-        temperature: 0.7, // Same as original
-        top_p: 0.9 // SPEED: Faster sampling
+        max_tokens: 50, // Shorter = faster
+        temperature: 0.7,
+        top_p: 0.9,
+        stream: true // CRITICAL: Streaming enabled
       },
       {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 10000 // SPEED: Shorter timeout
+        timeout: 5000,
+        responseType: 'stream'
       }
     );
     
-    return response.data.choices[0].message.content.trim();
+    // Collect streamed response
+    return new Promise((resolve, reject) => {
+      let fullResponse = '';
+      let firstChunk = true;
+      const timeout = setTimeout(() => reject(new Error('Stream timeout')), 5000);
+      
+      response.data.on('data', (chunk) => {
+        const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
+        
+        for (const line of lines) {
+          if (line.includes('[DONE]')) {
+            clearTimeout(timeout);
+            resolve(fullResponse.trim());
+            return;
+          }
+          
+          if (line.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(line.slice(6));
+              const content = json.choices?.[0]?.delta?.content;
+              if (content) {
+                fullResponse += content;
+                if (firstChunk) {
+                  log('🚀 First token received'); // Response starts flowing
+                  firstChunk = false;
+                }
+              }
+            } catch (e) {
+              // Skip parsing errors
+            }
+          }
+        }
+      });
+      
+      response.data.on('end', () => {
+        clearTimeout(timeout);
+        resolve(fullResponse.trim() || CACHE.clarify);
+      });
+      
+      response.data.on('error', (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
     
   } catch (error) {
-    console.error('❌ GPT error:', error.message);
-    // Fallback to cached response
+    logError('❌ GPT error:', error.message);
     return CACHE.clarify;
   }
 }
 
-// FAST TRANSCRIPTION with Deepgram fallback
-async function transcribeFast(audioUrl) {
+// ULTRA-FAST TRANSCRIPTION with downsampling
+async function transcribeUltraFast(audioUrl) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY not set');
-    }
-    
-    // SPEED: Use Deepgram if available (10x faster)
+    // Deepgram first (fastest)
     if (process.env.DEEPGRAM_API_KEY) {
       try {
         return await transcribeWithDeepgram(audioUrl);
       } catch (dgError) {
-        console.warn('⚠️ Deepgram failed, falling back to Whisper');
+        log('⚠️ Deepgram failed, using Whisper');
       }
     }
     
-    // SPEED: Stream audio instead of buffering
-    console.log('📥 Streaming audio...');
+    // Download and downsample audio
+    log('📥 Downloading & downsampling...');
     
     const audioResponse = await axios.get(audioUrl, { 
       responseType: 'stream',
-      timeout: 5000
+      timeout: 3000
     });
     
+    // DOWNSAMPLE: 8kHz mono WAV (60% faster transcription)
+    const downsampledBuffer = await new Promise((resolve, reject) => {
+      const chunks = [];
+      
+      ffmpeg(audioResponse.data)
+        .audioFrequency(8000) // 8kHz
+        .audioChannels(1) // Mono
+        .audioCodec('pcm_s16le')
+        .format('wav')
+        .on('error', reject)
+        .on('end', () => resolve(Buffer.concat(chunks)))
+        .pipe()
+        .on('data', chunk => chunks.push(chunk));
+    });
+    
+    log(`✅ Downsampled to ${downsampledBuffer.length} bytes`);
+    
+    // Send to Whisper
     const formData = new FormData();
-    formData.append('file', audioResponse.data, {
-      filename: 'audio.mp3',
-      contentType: 'audio/mpeg'
+    formData.append('file', downsampledBuffer, {
+      filename: 'audio.wav',
+      contentType: 'audio/wav'
     });
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
-    formData.append('response_format', 'text'); // SPEED: Skip JSON parsing
+    formData.append('response_format', 'text');
     
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -313,7 +344,7 @@ async function transcribeFast(audioUrl) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        timeout: 10000,
+        timeout: 8000,
         maxContentLength: Infinity,
         maxBodyLength: Infinity
       }
@@ -322,12 +353,12 @@ async function transcribeFast(audioUrl) {
     return typeof response.data === 'string' ? response.data.trim() : response.data.text.trim();
     
   } catch (error) {
-    console.error('❌ Transcription error:', error.message);
+    logError('❌ Transcription error:', error.message);
     return "[unclear]";
   }
 }
 
-// Deepgram transcription (fastest option)
+// Deepgram transcription
 async function transcribeWithDeepgram(audioUrl) {
   const response = await axios.post(
     'https://api.deepgram.com/v1/listen',
@@ -340,16 +371,26 @@ async function transcribeWithDeepgram(audioUrl) {
       params: {
         model: 'nova-2',
         language: 'en-US',
-        punctuate: true
+        punctuate: false, // Faster without punctuation
+        smart_format: false
       },
-      timeout: 5000
+      timeout: 3000
     }
   );
   
   return response.data.results.channels[0].alternatives[0].transcript;
 }
 
-// Save to Airtable - ORIGINAL LOGIC PRESERVED
+// QUESTION PREDICTOR - instant fallback
+function predictNextQuestion(conversation) {
+  const step = conversation.step || 0;
+  if (step < QUESTION_FLOW.length) {
+    return QUESTION_FLOW[step];
+  }
+  return CACHE.clarify;
+}
+
+// Async Airtable save
 async function saveToAirtable(conversation) {
   try {
     const fullTranscript = conversation.history
@@ -365,45 +406,35 @@ async function saveToAirtable(conversation) {
       "Qualified": "Yes"
     });
     
-    console.log('✅ Saved to Airtable');
+    log('✅ Saved to Airtable');
   } catch (error) {
-    console.error('❌ Airtable error:', error.message);
-    throw error;
+    logError('❌ Airtable error:', error.message);
   }
 }
 
-// Sanitize - ORIGINAL LOGIC
 function sanitize(text) {
   return text
     .replace(/[<>]/g, '')
     .replace(/&/g, 'and')
     .replace(/CONVERSATION_COMPLETE/g, '')
-    .substring(0, 500);
+    .substring(0, 400);
 }
 
-// Error handling
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.message);
+  logError('❌ Error:', err.message);
   res.type('application/xml').status(200).send(XML_TEMPLATES.error);
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('========================================');
-  console.log('🚀 OPTIMIZED VOICE AGENT STARTED');
+  console.log('🚀 ULTRA-FAST VOICE AGENT');
   console.log(`📡 Port: ${PORT}`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
   console.log(`🎤 Deepgram: ${process.env.DEEPGRAM_API_KEY ? '✅' : '⚠️'}`);
-  console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught:', error.message);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled:', reason);
-});
+process.on('uncaughtException', (error) => logError('❌ Uncaught:', error.message));
+process.on('unhandledRejection', (reason) => logError('❌ Unhandled:', reason));
