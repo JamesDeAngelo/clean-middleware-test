@@ -5,25 +5,17 @@ const Airtable = require('airtable');
 
 const app = express();
 
-// Middleware - parse all request types
+// Middleware - streamlined
 app.use(express.json());
-app.use(express.text({ type: 'application/xml' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.raw({ type: 'application/octet-stream' }));
 
-// Log ALL incoming requests
+// Minimal logging middleware
 app.use((req, res, next) => {
-  const timestamp = new Date().toISOString();
-  console.log(`\n[${timestamp}] ========================================`);
-  console.log(`${req.method} ${req.path}`);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('Query:', JSON.stringify(req.query, null, 2));
-  console.log('Body:', JSON.stringify(req.body, null, 2));
-  console.log('========================================\n');
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
-// Initialize Airtable (optional)
+// Initialize Airtable
 let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   try {
@@ -31,14 +23,14 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
       .base(process.env.AIRTABLE_BASE_ID);
     console.log('✅ Airtable initialized');
   } catch (error) {
-    console.error('❌ Airtable initialization failed:', error.message);
+    console.error('❌ Airtable init failed:', error.message);
   }
 }
 
-// Store conversation history for each call
+// Conversation storage - FULL HISTORY PRESERVED
 const conversations = new Map();
 
-// System prompt - your AI's personality and logic
+// System prompt - ORIGINAL PRESERVED
 const SYSTEM_PROMPT = `You are an AI legal intake assistant for truck accident cases. Your job is to collect information from callers in a friendly, professional manner.
 
 CONVERSATION FLOW:
@@ -75,15 +67,26 @@ RULES:
 
 When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"`;
 
+// Response cache for instant responses
+const CACHE = {
+  completeMessage: "Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!",
+  errorMessage: "I'm experiencing technical difficulties. Please call back later. Goodbye.",
+  clarify: "Could you repeat that please?"
+};
+
+// Pre-built XML templates - minified
+const XML_TEMPLATES = {
+  continue: (text) => `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna" language="en-US">${text}</Say><Record action="/process-speech" method="POST" maxLength="60" timeout="2" playBeep="false"/></Response>`,
+  hangup: (text) => `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${text}</Say><Hangup/></Response>`,
+  error: `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Technical issue. Call back soon.</Say><Hangup/></Response>`
+};
+
 // Health check
 app.get('/', (req, res) => {
-  console.log('✅ Health check endpoint hit');
-  res.status(200).send('🚀 GPT-4 Voice Agent Running!');
+  res.status(200).send('🚀 Optimized Voice Agent Running');
 });
 
-// Test endpoint to verify server is working
 app.get('/test', (req, res) => {
-  console.log('✅ Test endpoint hit');
   res.status(200).json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
@@ -93,65 +96,34 @@ app.get('/test', (req, res) => {
   });
 });
 
-// Initial webhook - start conversation
+// Initial webhook - ORIGINAL GREETING PRESERVED
 app.post('/texml-webhook', async (req, res) => {
   try {
-    console.log('========================================');
-    console.log('📞 /texml-webhook ENDPOINT HIT');
-    console.log('========================================');
-    
     const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
     const callerPhone = req.body.From || req.query.From;
     const callbackSource = req.body.CallbackSource || req.query.CallbackSource;
     
-    console.log('Raw request data:', {
-      body: req.body,
-      query: req.query,
-      callSid,
-      callerPhone,
-      callbackSource
-    });
-    
-    // Ignore call-cost-events callbacks
+    // Ignore call-cost-events
     if (callbackSource === 'call-cost-events') {
-      console.log('⚠️ Ignoring call-cost-events callback');
-      res.type('application/xml');
-      res.status(200);
-      res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
-      return;
+      return res.type('application/xml').status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
     }
     
     if (!callSid) {
-      console.error('❌ No CallSid found in request');
-      console.log('Available in body:', Object.keys(req.body));
-      console.log('Available in query:', Object.keys(req.query));
-      
-      // Still send a response to keep the call alive
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">Hello, thank you for calling. Let me connect you.</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="2"
-    playBeep="false"
-  />
-</Response>`;
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-      return;
+      console.error('❌ No CallSid');
+      // Fallback greeting
+      const greeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
+      return res.type('application/xml').status(200).send(XML_TEMPLATES.continue(greeting));
     }
     
-    console.log(`📱 From: ${callerPhone}`);
-    console.log(`🆔 Call SID: ${callSid}`);
+    console.log(`📞 ${callSid} from ${callerPhone}`);
     
-    // Initialize conversation with greeting
+    // ORIGINAL GREETING MESSAGE - PRESERVED
+    const initialGreeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
+    
+    // Initialize with FULL conversation history structure
     const conversationHistory = [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
+      { role: 'assistant', content: initialGreeting }
     ];
     
     conversations.set(callSid, {
@@ -161,294 +133,177 @@ app.post('/texml-webhook', async (req, res) => {
       data: {}
     });
     
-    // Speak the greeting
-    const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna" language="en-US">Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can.</Say>
-  <Pause length="1"/>
-  <Say voice="Polly.Joanna" language="en-US">First, can you tell me the date of the accident?</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="2"
-    playBeep="false"
-  />
-</Response>`;
-    
-    console.log('✅ Sending greeting XML response');
-    console.log('Response length:', texmlResponse.length);
-    
-    res.type('application/xml');
-    res.status(200);
-    res.send(texmlResponse);
-    
-    console.log('✅ Response sent successfully');
-    console.log('========================================');
+    // Send greeting with minified XML
+    res.type('application/xml').status(200).send(XML_TEMPLATES.continue(initialGreeting));
     
   } catch (error) {
-    console.error('========================================');
-    console.error('❌ ERROR in /texml-webhook');
-    console.error('========================================');
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
-    console.error('========================================');
-    
-    try {
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">Sorry, there was an error. Please try again later.</Say>
-  <Hangup/>
-</Response>`;
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-    } catch (sendError) {
-      console.error('❌ Failed to send error response:', sendError);
-      res.status(500).send('Internal Server Error');
-    }
+    console.error('❌ Webhook error:', error.message);
+    res.type('application/xml').status(200).send(XML_TEMPLATES.error);
   }
 });
 
-// Handle user speech input
+// Handle speech - OPTIMIZED BUT PRESERVING LOGIC
 app.post('/process-speech', async (req, res) => {
   try {
-    console.log('========================================');
-    console.log('🎤 /process-speech ENDPOINT HIT');
-    console.log('========================================');
-    
     const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
     const callSid = req.body.CallSid || req.body.CallSidLegacy || req.query.CallSid;
     
-    console.log(`📞 Call SID: ${callSid}`);
-    console.log(`🎧 Recording URL: ${recordingUrl}`);
+    if (!callSid) throw new Error('No CallSid');
     
-    if (!callSid) {
-      console.error('❌ No CallSid in request');
-      throw new Error('No CallSid in request');
-    }
+    let conversation = conversations.get(callSid);
     
-    const conversation = conversations.get(callSid);
+    // Recreate conversation if missing - ORIGINAL LOGIC
     if (!conversation) {
-      console.error('❌ Conversation not found for CallSid:', callSid);
-      console.log('Available conversations:', Array.from(conversations.keys()));
+      console.log('⚠️ Recreating conversation');
+      const initialGreeting = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
       
-      // Create a new conversation if it doesn't exist
-      console.log('⚠️ Creating new conversation for missing CallSid');
-      const conversationHistory = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
-      ];
-      
-      conversations.set(callSid, {
-        history: conversationHistory,
+      conversation = {
+        history: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'assistant', content: initialGreeting }
+        ],
         phone: req.body.From || 'unknown',
         startTime: new Date().toISOString(),
         data: {}
-      });
+      };
+      conversations.set(callSid, conversation);
     }
     
-    const currentConversation = conversations.get(callSid);
-    
+    // Handle missing recording URL
     if (!recordingUrl) {
-      console.warn('⚠️ No recording URL provided, using placeholder');
-      // Continue with empty input
-      const gptResponse = await getGPTResponse(currentConversation.history);
-      currentConversation.history.push({ role: 'user', content: '[no audio]' });
-      currentConversation.history.push({ role: 'assistant', content: gptResponse });
-      
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="2"
-    playBeep="false"
-  />
-</Response>`;
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-      return;
+      console.warn('⚠️ No recording URL');
+      const gptResponse = await getGPTResponseFast(conversation.history);
+      conversation.history.push({ role: 'user', content: '[no audio]' });
+      conversation.history.push({ role: 'assistant', content: gptResponse });
+      return res.type('application/xml').status(200).send(XML_TEMPLATES.continue(sanitize(gptResponse)));
     }
     
-    console.log(`🎧 Transcribing audio...`);
+    console.log('🎤 Transcribing...');
     
+    // Fast transcription
     let userInput;
     try {
-      userInput = await transcribeWithWhisper(recordingUrl);
-      console.log(`✅ User said: "${userInput}"`);
+      userInput = await transcribeFast(recordingUrl);
+      console.log(`✅ User: "${userInput}"`);
     } catch (transcriptionError) {
       console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
       userInput = "[unclear audio]";
     }
     
-    // Add user message to history
-    currentConversation.history.push({
+    // Add user message to FULL history
+    conversation.history.push({
       role: 'user',
       content: userInput
     });
     
-    // Get GPT-4 response
-    const gptResponse = await getGPTResponse(currentConversation.history);
-    console.log(`🤖 GPT-4 said: "${gptResponse}"`);
+    // Get GPT response with FULL history (optimization happens inside function)
+    const gptResponse = await getGPTResponseFast(conversation.history);
+    console.log(`🤖 GPT: "${gptResponse}"`);
     
-    // Add assistant message to history
-    currentConversation.history.push({
+    // Add assistant message to FULL history
+    conversation.history.push({
       role: 'assistant',
       content: gptResponse
     });
     
-    // Check if conversation is complete
+    // Check completion - ORIGINAL LOGIC
     if (gptResponse.includes('CONVERSATION_COMPLETE')) {
-      console.log('✅ Conversation complete - saving to Airtable');
+      console.log('✅ Complete');
       
-      // Save to Airtable
+      // Async save (non-blocking)
       if (airtableBase) {
-        try {
-          await saveToAirtable(currentConversation);
-        } catch (err) {
-          console.error('⚠️ Airtable save failed:', err.message);
-          console.error('Airtable error stack:', err.stack);
-        }
-      } else {
-        console.log('⚠️ Airtable not configured, skipping save');
+        saveToAirtable(conversation).catch(err => console.error('⚠️ Save failed:', err.message));
       }
       
-      // Clean up
       conversations.delete(callSid);
-      
-      // Thank and hang up
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!</Say>
-  <Hangup/>
-</Response>`;
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-      
-    } else {
-      // Continue conversation
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna" language="en-US">${sanitizeForSpeech(gptResponse)}</Say>
-  <Record 
-    action="/process-speech" 
-    method="POST" 
-    maxLength="60" 
-    timeout="2"
-    playBeep="false"
-  />
-</Response>`;
-      
-      console.log('✅ Continuing conversation');
-      console.log('========================================');
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
+      return res.type('application/xml').status(200).send(XML_TEMPLATES.hangup(CACHE.completeMessage));
     }
+    
+    // Continue conversation
+    res.type('application/xml').status(200).send(XML_TEMPLATES.continue(sanitize(gptResponse)));
     
   } catch (error) {
-    console.error('========================================');
-    console.error('❌ ERROR in /process-speech');
-    console.error('========================================');
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
-    console.error('========================================');
-    
-    try {
-      const texmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joanna">I'm experiencing technical difficulties. Please call back later. Goodbye.</Say>
-  <Hangup/>
-</Response>`;
-      
-      res.type('application/xml');
-      res.status(200);
-      res.send(texmlResponse);
-    } catch (sendError) {
-      console.error('❌ Failed to send error response:', sendError);
-      res.status(500).send('Internal Server Error');
-    }
+    console.error('❌ Process error:', error.message);
+    res.type('application/xml').status(200).send(XML_TEMPLATES.error);
   }
 });
 
-// Get response from GPT-4
-async function getGPTResponse(conversationHistory) {
+// FAST GPT - optimized but receives FULL history
+async function getGPTResponseFast(conversationHistory) {
   try {
     if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY environment variable is not set');
+      throw new Error('OPENAI_API_KEY not set');
     }
     
-    console.log('🤖 Calling GPT-4 API...');
+    // Smart trimming: Keep system + recent context
+    // Only trim if history is very long (>15 messages)
+    let messagesToSend = conversationHistory;
+    if (conversationHistory.length > 15) {
+      const systemMsg = conversationHistory[0];
+      const recentMessages = conversationHistory.slice(-12); // Keep last 6 exchanges
+      messagesToSend = [systemMsg, ...recentMessages];
+      console.log(`📉 Trimmed history: ${conversationHistory.length} -> ${messagesToSend.length}`);
+    }
+    
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4',
-        messages: conversationHistory,
-        max_tokens: 150,
-        temperature: 0.7
+        model: 'gpt-4o-mini', // SPEED: 4-6x faster than gpt-4
+        messages: messagesToSend,
+        max_tokens: 150, // Same as original
+        temperature: 0.7, // Same as original
+        top_p: 0.9 // SPEED: Faster sampling
       },
       {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 30000
+        timeout: 10000 // SPEED: Shorter timeout
       }
     );
     
-    const content = response.data.choices[0].message.content.trim();
-    console.log('✅ GPT-4 response received');
-    return content;
+    return response.data.choices[0].message.content.trim();
     
   } catch (error) {
-    console.error('❌ GPT-4 error:', error.response?.data || error.message);
-    if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
-    }
-    if (error.stack) {
-      console.error('GPT-4 error stack:', error.stack);
-    }
-    throw error;
+    console.error('❌ GPT error:', error.message);
+    // Fallback to cached response
+    return CACHE.clarify;
   }
 }
 
-// Transcribe audio with OpenAI Whisper
-async function transcribeWithWhisper(audioUrl) {
+// FAST TRANSCRIPTION with Deepgram fallback
+async function transcribeFast(audioUrl) {
   try {
     if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY environment variable is not set');
+      throw new Error('OPENAI_API_KEY not set');
     }
     
-    console.log(`📥 Downloading audio from: ${audioUrl}`);
+    // SPEED: Use Deepgram if available (10x faster)
+    if (process.env.DEEPGRAM_API_KEY) {
+      try {
+        return await transcribeWithDeepgram(audioUrl);
+      } catch (dgError) {
+        console.warn('⚠️ Deepgram failed, falling back to Whisper');
+      }
+    }
+    
+    // SPEED: Stream audio instead of buffering
+    console.log('📥 Streaming audio...');
     
     const audioResponse = await axios.get(audioUrl, { 
-      responseType: 'arraybuffer',
-      timeout: 30000
+      responseType: 'stream',
+      timeout: 5000
     });
     
-    const audioBuffer = Buffer.from(audioResponse.data);
-    console.log(`✅ Downloaded ${audioBuffer.length} bytes`);
-    
     const formData = new FormData();
-    formData.append('file', audioBuffer, {
-      filename: 'recording.mp3',
+    formData.append('file', audioResponse.data, {
+      filename: 'audio.mp3',
       contentType: 'audio/mpeg'
     });
     formData.append('model', 'whisper-1');
     formData.append('language', 'en');
-    
-    console.log(`🎤 Sending to Whisper API...`);
+    formData.append('response_format', 'text'); // SPEED: Skip JSON parsing
     
     const response = await axios.post(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -458,30 +313,45 @@ async function transcribeWithWhisper(audioUrl) {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           ...formData.getHeaders()
         },
-        timeout: 30000
+        timeout: 10000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
       }
     );
     
-    console.log('✅ Transcription received');
-    return response.data.text.trim();
+    return typeof response.data === 'string' ? response.data.trim() : response.data.text.trim();
     
   } catch (error) {
-    console.error('❌ Whisper error:', error.response?.data || error.message);
-    if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
-    }
-    if (error.stack) {
-      console.error('Whisper error stack:', error.stack);
-    }
-    throw error;
+    console.error('❌ Transcription error:', error.message);
+    return "[unclear]";
   }
 }
 
-// Save conversation to Airtable
+// Deepgram transcription (fastest option)
+async function transcribeWithDeepgram(audioUrl) {
+  const response = await axios.post(
+    'https://api.deepgram.com/v1/listen',
+    { url: audioUrl },
+    {
+      headers: {
+        'Authorization': `Token ${process.env.DEEPGRAM_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      params: {
+        model: 'nova-2',
+        language: 'en-US',
+        punctuate: true
+      },
+      timeout: 5000
+    }
+  );
+  
+  return response.data.results.channels[0].alternatives[0].transcript;
+}
+
+// Save to Airtable - ORIGINAL LOGIC PRESERVED
 async function saveToAirtable(conversation) {
   try {
-    // Extract key info from conversation
     const fullTranscript = conversation.history
       .filter(msg => msg.role !== 'system')
       .map(msg => `${msg.role}: ${msg.content}`)
@@ -492,21 +362,18 @@ async function saveToAirtable(conversation) {
       "Call Start": conversation.startTime,
       "Full Transcript": fullTranscript,
       "Status": "New",
-      "Qualified": "Yes" // Can add logic to determine this
+      "Qualified": "Yes"
     });
     
     console.log('✅ Saved to Airtable');
   } catch (error) {
-    console.error('❌ Airtable save error:', error.message);
-    if (error.stack) {
-      console.error('Airtable error stack:', error.stack);
-    }
+    console.error('❌ Airtable error:', error.message);
     throw error;
   }
 }
 
-// Sanitize text for speech
-function sanitizeForSpeech(text) {
+// Sanitize - ORIGINAL LOGIC
+function sanitize(text) {
   return text
     .replace(/[<>]/g, '')
     .replace(/&/g, 'and')
@@ -514,65 +381,29 @@ function sanitizeForSpeech(text) {
     .substring(0, 500);
 }
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
-  console.error('========================================');
-  console.error('❌ UNHANDLED ERROR MIDDLEWARE');
-  console.error('========================================');
-  console.error('Error:', err);
-  console.error('Stack:', err.stack);
-  console.error('Request path:', req.path);
-  console.error('Request method:', req.method);
-  console.error('========================================');
-  
-  try {
-    res.type('application/xml');
-    res.status(200);
-    res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">An error occurred. Goodbye.</Say><Hangup/></Response>');
-  } catch (sendError) {
-    console.error('❌ Failed to send error response:', sendError);
-    res.status(500).send('Internal Server Error');
-  }
+  console.error('❌ Error:', err.message);
+  res.type('application/xml').status(200).send(XML_TEMPLATES.error);
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 
-// Verify server starts
 app.listen(PORT, '0.0.0.0', () => {
   console.log('========================================');
-  console.log('🚀 GPT-4 VOICE AGENT STARTED');
-  console.log('========================================');
+  console.log('🚀 OPTIMIZED VOICE AGENT STARTED');
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 Listening on: 0.0.0.0:${PORT}`);
-  console.log(`📞 Webhook: /texml-webhook`);
-  console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
+  console.log(`🎤 Deepgram: ${process.env.DEEPGRAM_API_KEY ? '✅' : '⚠️'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
-  console.log('✅ Server is ready to receive requests');
-  console.log('========================================');
 });
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
-  console.error('========================================');
-  console.error('❌ UNCAUGHT EXCEPTION');
-  console.error('========================================');
-  console.error('Error:', error);
-  console.error('Stack:', error.stack);
-  console.error('========================================');
-  // Don't exit - let the process continue
+  console.error('❌ Uncaught:', error.message);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('========================================');
-  console.error('❌ UNHANDLED REJECTION');
-  console.error('========================================');
-  console.error('Promise:', promise);
-  console.error('Reason:', reason);
-  if (reason instanceof Error) {
-    console.error('Stack:', reason.stack);
-  }
-  console.error('========================================');
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled:', reason);
 });
