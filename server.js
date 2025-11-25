@@ -78,7 +78,7 @@ When you have all the information, respond with exactly: "CONVERSATION_COMPLETE"
 // Health check
 app.get('/', (req, res) => {
   console.log('✅ Health check endpoint hit');
-  res.status(200).send('🚀 GPT-4 Voice Agent Running!');
+  res.status(200).send('🚀 GPT-4 Voice Agent Running (Telnyx Voice API)!');
 });
 
 // Test endpoint to verify server is working
@@ -93,39 +93,43 @@ app.get('/test', (req, res) => {
   });
 });
 
-// Initial webhook - start conversation (Telnyx Voice API)
+// Initial webhook - start conversation
 app.post('/telnyx-webhook', async (req, res) => {
   try {
     console.log('========================================');
     console.log('📞 /telnyx-webhook ENDPOINT HIT');
     console.log('========================================');
     
-    const eventType = req.body.data?.event_type || req.body.event_type;
-    const payload = req.body.data?.payload || req.body.payload || {};
-    const callControlId = payload.call_control_id;
-    const callLegId = payload.call_leg_id;
-    const callerPhone = payload.from || payload.caller_id_number;
+    const event = req.body.data?.event_type || req.body.event_type;
+    const callControlId = req.body.data?.payload?.call_control_id;
+    const callSessionId = req.body.data?.payload?.call_session_id;
+    const callerPhone = req.body.data?.payload?.from;
     
-    console.log('Raw request data:', {
-      eventType,
-      callControlId,
-      callLegId,
-      callerPhone,
-      fullPayload: JSON.stringify(payload, null, 2)
-    });
+    console.log('Event type:', event);
+    console.log('Call Control ID:', callControlId);
+    console.log('Call Session ID:', callSessionId);
+    console.log('From:', callerPhone);
     
-    // Handle call.answered event - this is when we start the conversation
-    if (eventType === 'call.answered') {
-      console.log(`📱 Call answered from: ${callerPhone}`);
-      console.log(`🆔 Call Control ID: ${callControlId}`);
-      console.log(`🆔 Call Leg ID: ${callLegId}`);
+    // Handle different event types
+    if (event === 'call.initiated' || event === 'call.answered') {
+      console.log(`📱 From: ${callerPhone}`);
+      console.log(`🆔 Call Session ID: ${callSessionId}`);
       
-      // Use call_control_id as the conversation key
-      const conversationKey = callControlId || callLegId;
-      
-      if (!conversationKey) {
-        console.error('❌ No call_control_id or call_leg_id found in request');
-        res.status(200).json({ commands: [] });
+      // Answer the call first
+      if (event === 'call.initiated') {
+        console.log('📞 Answering call...');
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/answer`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        res.status(200).json({ received: true });
         return;
       }
       
@@ -135,85 +139,69 @@ app.post('/telnyx-webhook', async (req, res) => {
         { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
       ];
       
-      conversations.set(conversationKey, {
+      conversations.set(callSessionId, {
         history: conversationHistory,
         phone: callerPhone,
         startTime: new Date().toISOString(),
         data: {},
-        callControlId: callControlId,
-        callLegId: callLegId
+        callControlId: callControlId
       });
       
-      // Use Telnyx Call Control API to speak and record
-      // First, we need to answer the call and start speaking
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          // Start speaking using Call Control API
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?",
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          // Then start recording
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
-            {
-              format: 'mp3',
-              channels: 'single',
-              max_length: 60,
-              play_beep: false,
-              recording_status_callback: `${process.env.WEBHOOK_BASE_URL || 'https://clean-middleware-test-1.onrender.com'}/process-speech`,
-              recording_status_callback_method: 'POST'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          console.log('✅ Started speaking and recording via Call Control API');
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.response?.data || apiError.message);
+      // Speak the greeting
+      const greetingText = "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?";
+      
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
+        {
+          payload: greetingText,
+          voice: 'female',
+          language: 'en-US'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
+      );
       
-      // Acknowledge the webhook
-      res.status(200).json({ commands: [] });
+      console.log('✅ Greeting sent, starting recording...');
       
+      // Start recording after speaking
+      setTimeout(async () => {
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
+          {
+            format: 'mp3',
+            channels: 'single',
+            max_length: 60
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+      }, 8000); // Wait for greeting to finish
+      
+      res.status(200).json({ received: true });
       console.log('✅ Response sent successfully');
       console.log('========================================');
       
-    } else if (eventType === 'call.initiated') {
-      // For call.initiated, we might need to answer it
-      // But usually Telnyx auto-answers if configured
-      console.log(`📞 Call initiated from: ${callerPhone}`);
-      res.status(200).json({ commands: [] });
+    } else if (event === 'call.recording.saved') {
+      // Handle recording
+      await handleRecording(req.body.data.payload);
+      res.status(200).json({ received: true });
       
-    } else if (eventType === 'call.hangup') {
-      // Clean up conversation on hangup
-      const conversationKey = callControlId || callLegId;
-      if (conversationKey && conversations.has(conversationKey)) {
-        console.log(`🧹 Cleaning up conversation for: ${conversationKey}`);
-        conversations.delete(conversationKey);
-      }
-      res.status(200).json({ commands: [] });
+    } else if (event === 'call.speak.ended') {
+      // Speech ended, start recording
+      console.log('🎤 Speech ended, can start recording now');
+      res.status(200).json({ received: true });
       
     } else {
-      // For other event types, just acknowledge
-      console.log(`ℹ️ Event type: ${eventType} - acknowledging`);
-      res.status(200).json({ commands: [] });
+      console.log(`ℹ️ Unhandled event type: ${event}`);
+      res.status(200).json({ received: true });
     }
     
   } catch (error) {
@@ -222,171 +210,37 @@ app.post('/telnyx-webhook', async (req, res) => {
     console.error('========================================');
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
+    if (error.response) {
+      console.error('API Response:', error.response.data);
+    }
     console.error('========================================');
     
-    try {
-      const payload = req.body.data?.payload || req.body.payload || {};
-      const callControlId = payload.call_control_id;
-      
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: 'Sorry, there was an error. Please try again later.',
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          setTimeout(async () => {
-            try {
-              await axios.post(
-                `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-                {},
-                {
-                  headers: {
-                    'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                    'Content-Type': 'application/json'
-                  }
-                }
-              );
-            } catch (hangupError) {
-              console.error('❌ Hangup error:', hangupError.message);
-            }
-          }, 3000);
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.message);
-        }
-      }
-      
-      res.status(200).json({ commands: [] });
-    } catch (sendError) {
-      console.error('❌ Failed to send error response:', sendError);
-      res.status(500).send('Internal Server Error');
-    }
+    res.status(200).json({ received: true });
   }
 });
 
-// Handle user speech input (Telnyx recording webhook)
-app.post('/process-speech', async (req, res) => {
+// Handle recording
+async function handleRecording(payload) {
   try {
     console.log('========================================');
-    console.log('🎤 /process-speech ENDPOINT HIT');
+    console.log('🎤 HANDLING RECORDING');
     console.log('========================================');
     
-    const eventType = req.body.data?.event_type || req.body.event_type;
-    const payload = req.body.data?.payload || req.body.payload || {};
+    const recordingUrl = payload.recording_urls?.mp3;
+    const callSessionId = payload.call_session_id;
+    const callControlId = payload.call_control_id;
     
-    // Extract recording URL from various possible locations
-    const recordingUrl = payload.recording_urls?.mp3 || 
-                        payload.recording_urls?.wav ||
-                        payload.recording_url ||
-                        req.body.recording_url;
-    
-    const callControlId = payload.call_control_id || req.body.call_control_id;
-    const callLegId = payload.call_leg_id || req.body.call_leg_id;
-    
-    console.log(`📞 Event Type: ${eventType}`);
-    console.log(`📞 Call Control ID: ${callControlId}`);
-    console.log(`📞 Call Leg ID: ${callLegId}`);
+    console.log(`📞 Call Session ID: ${callSessionId}`);
     console.log(`🎧 Recording URL: ${recordingUrl}`);
-    console.log(`📦 Full payload:`, JSON.stringify(payload, null, 2));
     
-    // Only process recording.saved or recording.status events
-    if (eventType && !eventType.includes('recording')) {
-      console.log(`ℹ️ Not a recording event (${eventType}), acknowledging`);
-      res.status(200).json({ commands: [] });
-      return;
-    }
-    
-    // Use call_control_id as the conversation key
-    const conversationKey = callControlId || callLegId;
-    
-    if (!conversationKey) {
-      console.error('❌ No call_control_id or call_leg_id in request');
-      res.status(200).json({ commands: [] });
-      return;
-    }
-    
-    const conversation = conversations.get(conversationKey);
+    const conversation = conversations.get(callSessionId);
     if (!conversation) {
-      console.error('❌ Conversation not found for Call Control ID:', conversationKey);
-      console.log('Available conversations:', Array.from(conversations.keys()));
-      
-      // Create a new conversation if it doesn't exist
-      console.log('⚠️ Creating new conversation for missing Call Control ID');
-      const conversationHistory = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'assistant', content: "Hi, thanks for calling. I'm an automated assistant here to help log your truck accident case. I'll ask a few questions, and you can answer as best you can. First, can you tell me the date of the accident?" }
-      ];
-      
-      conversations.set(conversationKey, {
-        history: conversationHistory,
-        phone: req.body.data?.from || 'unknown',
-        startTime: new Date().toISOString(),
-        data: {},
-        callControlId: callControlId,
-        callLegId: callLegId
-      });
+      console.error('❌ Conversation not found for Session ID:', callSessionId);
+      return;
     }
-    
-    const currentConversation = conversations.get(conversationKey);
     
     if (!recordingUrl) {
-      console.warn('⚠️ No recording URL provided, using placeholder');
-      // Continue with empty input
-      const gptResponse = await getGPTResponse(currentConversation.history);
-      currentConversation.history.push({ role: 'user', content: '[no audio]' });
-      currentConversation.history.push({ role: 'assistant', content: gptResponse });
-      
-      // Use Call Control API to speak and record
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: sanitizeForSpeech(gptResponse),
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
-            {
-              format: 'mp3',
-              channels: 'single',
-              max_length: 60,
-              play_beep: false,
-              recording_status_callback: `${process.env.WEBHOOK_BASE_URL || 'https://clean-middleware-test-1.onrender.com'}/process-speech`,
-              recording_status_callback_method: 'POST'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.response?.data || apiError.message);
-        }
-      }
-      
-      res.status(200).json({ commands: [] });
+      console.warn('⚠️ No recording URL provided');
       return;
     }
     
@@ -398,22 +252,21 @@ app.post('/process-speech', async (req, res) => {
       console.log(`✅ User said: "${userInput}"`);
     } catch (transcriptionError) {
       console.error('❌ Transcription failed:', transcriptionError.message);
-      console.error('Transcription error stack:', transcriptionError.stack);
       userInput = "[unclear audio]";
     }
     
     // Add user message to history
-    currentConversation.history.push({
+    conversation.history.push({
       role: 'user',
       content: userInput
     });
     
     // Get GPT-4 response
-    const gptResponse = await getGPTResponse(currentConversation.history);
+    const gptResponse = await getGPTResponse(conversation.history);
     console.log(`🤖 GPT-4 said: "${gptResponse}"`);
     
     // Add assistant message to history
-    currentConversation.history.push({
+    conversation.history.push({
       role: 'assistant',
       content: gptResponse
     });
@@ -425,164 +278,100 @@ app.post('/process-speech', async (req, res) => {
       // Save to Airtable
       if (airtableBase) {
         try {
-          await saveToAirtable(currentConversation);
+          await saveToAirtable(conversation);
         } catch (err) {
           console.error('⚠️ Airtable save failed:', err.message);
-          console.error('Airtable error stack:', err.stack);
         }
       } else {
         console.log('⚠️ Airtable not configured, skipping save');
       }
       
-      // Clean up
-      conversations.delete(conversationKey);
-      
-      // Thank and hang up using Call Control API
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: 'Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!',
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          // Wait a bit for speech to finish, then hangup
-          setTimeout(async () => {
-            try {
-              await axios.post(
-                `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-                {},
-                {
-                  headers: {
-                    'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                    'Content-Type': 'application/json'
-                  }
-                }
-              );
-            } catch (hangupError) {
-              console.error('❌ Hangup error:', hangupError.message);
-            }
-          }, 5000);
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.response?.data || apiError.message);
+      // Thank and hang up
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
+        {
+          payload: "Thank you for providing all that information. A qualified truck accident attorney will review your case and contact you within 24 hours. Have a great day!",
+          voice: 'female',
+          language: 'en-US'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
+      );
       
-      res.status(200).json({ commands: [] });
+      // Hangup after speaking
+      setTimeout(async () => {
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+      }, 8000);
+      
+      // Clean up
+      conversations.delete(callSessionId);
       
     } else {
-      // Continue conversation using Call Control API
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: sanitizeForSpeech(gptResponse),
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
-            {
-              format: 'mp3',
-              channels: 'single',
-              max_length: 60,
-              play_beep: false,
-              recording_status_callback: `${process.env.WEBHOOK_BASE_URL || 'https://clean-middleware-test-1.onrender.com'}/process-speech`,
-              recording_status_callback_method: 'POST'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          console.log('✅ Continuing conversation via Call Control API');
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.response?.data || apiError.message);
+      // Continue conversation
+      const cleanResponse = sanitizeForSpeech(gptResponse);
+      
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
+        {
+          payload: cleanResponse,
+          voice: 'female',
+          language: 'en-US'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
+      );
+      
+      // Start recording again after speaking
+      setTimeout(async () => {
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`,
+          {
+            format: 'mp3',
+            channels: 'single',
+            max_length: 60
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+      }, 5000);
       
       console.log('✅ Continuing conversation');
       console.log('========================================');
-      
-      res.status(200).json({ commands: [] });
     }
     
   } catch (error) {
     console.error('========================================');
-    console.error('❌ ERROR in /process-speech');
+    console.error('❌ ERROR in handleRecording');
     console.error('========================================');
     console.error('Error message:', error.message);
     console.error('Error stack:', error.stack);
-    console.error('========================================');
-    
-    try {
-      const callControlId = req.body.data?.call_control_id || req.body.call_control_id;
-      if (callControlId && process.env.TELNYX_API_KEY) {
-        try {
-          await axios.post(
-            `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
-            {
-              payload: "I'm experiencing technical difficulties. Please call back later. Goodbye.",
-              voice: 'female',
-              language: 'en-US'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          setTimeout(async () => {
-            try {
-              await axios.post(
-                `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
-                {},
-                {
-                  headers: {
-                    'Authorization': `Bearer ${process.env.TELNYX_API_KEY}`,
-                    'Content-Type': 'application/json'
-                  }
-                }
-              );
-            } catch (hangupError) {
-              console.error('❌ Hangup error:', hangupError.message);
-            }
-          }, 3000);
-        } catch (apiError) {
-          console.error('❌ Call Control API error:', apiError.message);
-        }
-      }
-      
-      res.status(200).json({ commands: [] });
-    } catch (sendError) {
-      console.error('❌ Failed to send error response:', sendError);
-      res.status(500).send('Internal Server Error');
+    if (error.response) {
+      console.error('API Response:', error.response.data);
     }
+    console.error('========================================');
   }
-});
+}
 
 // Get response from GPT-4
 async function getGPTResponse(conversationHistory) {
@@ -618,9 +407,6 @@ async function getGPTResponse(conversationHistory) {
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
-    }
-    if (error.stack) {
-      console.error('GPT-4 error stack:', error.stack);
     }
     throw error;
   }
@@ -670,13 +456,6 @@ async function transcribeWithWhisper(audioUrl) {
     
   } catch (error) {
     console.error('❌ Whisper error:', error.response?.data || error.message);
-    if (error.response) {
-      console.error('Response status:', error.response.status);
-      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
-    }
-    if (error.stack) {
-      console.error('Whisper error stack:', error.stack);
-    }
     throw error;
   }
 }
@@ -684,7 +463,6 @@ async function transcribeWithWhisper(audioUrl) {
 // Save conversation to Airtable
 async function saveToAirtable(conversation) {
   try {
-    // Extract key info from conversation
     const fullTranscript = conversation.history
       .filter(msg => msg.role !== 'system')
       .map(msg => `${msg.role}: ${msg.content}`)
@@ -695,15 +473,12 @@ async function saveToAirtable(conversation) {
       "Call Start": conversation.startTime,
       "Full Transcript": fullTranscript,
       "Status": "New",
-      "Qualified": "Yes" // Can add logic to determine this
+      "Qualified": "Yes"
     });
     
     console.log('✅ Saved to Airtable');
   } catch (error) {
     console.error('❌ Airtable save error:', error.message);
-    if (error.stack) {
-      console.error('Airtable error stack:', error.stack);
-    }
     throw error;
   }
 }
@@ -724,46 +499,23 @@ app.use((err, req, res, next) => {
   console.error('========================================');
   console.error('Error:', err);
   console.error('Stack:', err.stack);
-  console.error('Request path:', req.path);
-  console.error('Request method:', req.method);
   console.error('========================================');
   
-  try {
-    res.status(200).json({
-      commands: [
-        {
-          type: 'speak',
-          payload: {
-            text: 'An error occurred. Goodbye.',
-            voice: 'female',
-            language: 'en-US'
-          }
-        },
-        {
-          type: 'hangup'
-        }
-      ]
-    });
-  } catch (sendError) {
-    console.error('❌ Failed to send error response:', sendError);
-    res.status(500).send('Internal Server Error');
-  }
+  res.status(200).json({ received: true });
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 
-// Verify server starts
 app.listen(PORT, '0.0.0.0', () => {
   console.log('========================================');
-  console.log('🚀 GPT-4 VOICE AGENT STARTED');
+  console.log('🚀 GPT-4 VOICE AGENT STARTED (TELNYX)');
   console.log('========================================');
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 Listening on: 0.0.0.0:${PORT}`);
   console.log(`📞 Webhook: /telnyx-webhook`);
-  console.log(`🎤 Speech Handler: /process-speech`);
   console.log(`🔑 OpenAI: ${process.env.OPENAI_API_KEY ? '✅' : '❌'}`);
-  console.log(`🔑 Telnyx API: ${process.env.TELNYX_API_KEY ? '✅' : '❌'}`);
+  console.log(`🔑 Telnyx: ${process.env.TELNYX_API_KEY ? '✅' : '❌'}`);
   console.log(`📊 Airtable: ${airtableBase ? '✅' : '⚠️'}`);
   console.log('========================================');
   console.log('✅ Server is ready to receive requests');
@@ -778,7 +530,6 @@ process.on('uncaughtException', (error) => {
   console.error('Error:', error);
   console.error('Stack:', error.stack);
   console.error('========================================');
-  // Don't exit - let the process continue
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -792,4 +543,3 @@ process.on('unhandledRejection', (reason, promise) => {
   }
   console.error('========================================');
 });
-
