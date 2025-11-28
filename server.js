@@ -87,6 +87,13 @@ app.post('/telnyx-webhook', async (req, res) => {
   }
 });
 
+
+//
+// ============================================================================
+// REPLACED SECTION: FULL NEW wss.on("connection")
+// ============================================================================
+//
+
 wss.on('connection', (ws) => {
   console.log('\n====================================');
   console.log('WEBSOCKET CONNECTED');
@@ -100,18 +107,49 @@ wss.on('connection', (ws) => {
     try {
       const data = JSON.parse(message);
 
+      // Log the raw message to see what Telnyx is actually sending
+      console.log('RAW WEBSOCKET MESSAGE:', JSON.stringify(data, null, 2));
+
       if (data.event === 'start') {
-        streamSid = data.stream_sid;
-        callControlId = data.call_control_id;
+        // Try multiple possible fields where Telnyx might send IDs
+        streamSid = data.stream_sid || data.streamSid || data.start?.stream_sid;
+        callControlId = data.call_control_id || data.callControlId || data.start?.call_control_id;
+        
+        // If still not found, look in metadata or custom parameters
+        if (!callControlId && data.start?.custom_headers) {
+          callControlId = data.start.custom_headers.call_control_id;
+        }
         
         console.log('STREAM START');
         console.log('Stream SID:', streamSid);
         console.log('Call ID:', callControlId);
+        console.log('All data keys:', Object.keys(data));
 
-        const sessionInfo = activeSessions.get(callControlId);
+        // Try to find session by any available ID
+        let sessionInfo = null;
+        
+        if (callControlId) {
+          sessionInfo = activeSessions.get(callControlId);
+        }
+        
+        // If not found, try to match by checking all active sessions
+        if (!sessionInfo && activeSessions.size > 0) {
+          console.log('Trying to match from active sessions...');
+          console.log('Active sessions:', Array.from(activeSessions.keys()));
+          
+          // Get the most recent session (likely the one we just created)
+          const sessions = Array.from(activeSessions.values());
+          sessionInfo = sessions[sessions.length - 1];
+          
+          if (sessionInfo) {
+            console.log('Using most recent session:', sessionInfo.callControlId);
+            callControlId = sessionInfo.callControlId;
+          }
+        }
         
         if (!sessionInfo) {
           console.log('ERROR: No session found');
+          console.log('Available sessions:', Array.from(activeSessions.keys()));
           return;
         }
 
@@ -174,6 +212,7 @@ wss.on('connection', (ws) => {
 
     } catch (error) {
       console.log('ERROR in message:', error.message);
+      console.log('Stack:', error.stack);
     }
   });
 
@@ -188,6 +227,14 @@ wss.on('connection', (ws) => {
     console.log('WEBSOCKET ERROR:', error.message);
   });
 });
+
+
+//
+// ============================================================================
+// END OF REPLACED SECTION
+// ============================================================================
+//
+
 
 server.on('upgrade', (request, socket, head) => {
   if (request.url === '/media-stream') {
