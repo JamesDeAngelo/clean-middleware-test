@@ -1,33 +1,44 @@
-require('dotenv').config();
 const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const { handleWebhook } = require('./telnyx');
+const { setupMediaStreamWebSocket } = require('./mediaStream');
 const logger = require('./utils/logger');
-const telnyx = require('./telnyx');
-const mediaStream = require('./mediaStream');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.post('/webhook/telnyx', async (req, res) => {
-  try {
-    await telnyx.handleWebhook(req, res);
-  } catch (error) {
-    logger.error(`Webhook error: ${error.message}`);
-    res.status(500).send('Internal Server Error');
-  }
+// Create HTTP server
+const server = http.createServer(app);
+
+// Create WebSocket server on the same HTTP server
+const wss = new WebSocket.Server({ 
+  server,
+  path: '/media-stream'
 });
 
-app.post('/media-stream', async (req, res) => {
-  try {
-    await mediaStream.handleMediaStream(req, res);
-  } catch (error) {
-    logger.error(`Media stream error: ${error.message}`);
-    res.status(500).send('Internal Server Error');
-  }
+// Setup media stream WebSocket handling
+setupMediaStreamWebSocket(wss);
+
+// Your existing HTTP routes
+app.post('/webhook', handleWebhook);
+
+// Add other routes here if you have them
+
+// Start the server
+server.listen(PORT, () => {
+  logger.info(`HTTP server listening on port ${PORT}`);
+  logger.info(`WebSocket server ready at ws://localhost:${PORT}/media-stream`);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT}`);
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+  });
 });

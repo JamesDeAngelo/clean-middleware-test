@@ -1,50 +1,60 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
-const { sendAudioToOpenAI } = require('./websocket');
 
-async function handleMediaStream(req, res) {
-  logger.info('Media stream event received');
-  logger.info('Media stream payload: ' + JSON.stringify(req.body, null, 2));
+function setupMediaStreamWebSocket(wss) {
+  wss.on('connection', (ws, req) => {
+    logger.info('Telnyx WebSocket connection established');
+    
+    let call_control_id = null;
 
-  const event_type = req.body?.data?.event_type;
-  const payload = req.body?.data?.payload || {};
-  const call_control_id = payload?.call_control_id;
-
-  if (!call_control_id) {
-    logger.error('Missing call_control_id in media stream');
-    return res.status(400).send('Missing call_control_id');
-  }
-
-  if (event_type === 'streaming.audio') {
-    try {
-      const audioChunk = payload?.audio;
-      
-      if (!audioChunk) {
-        logger.error(`No audio data in streaming.audio event for call: ${call_control_id}`);
-        return res.status(200).send('OK');
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message);
+        
+        // Extract call_control_id from initial message
+        if (data.event === 'start' && data.start) {
+          call_control_id = data.start.call_control_id;
+          logger.info(`Media stream started for call: ${call_control_id}`);
+        }
+        
+        // Handle media (audio) messages
+        if (data.event === 'media' && data.media) {
+          if (!call_control_id) {
+            logger.error('Received media without call_control_id');
+            return;
+          }
+          
+          const openAIWebSocket = sessionStore.getSession(call_control_id);
+          
+          if (openAIWebSocket && openAIWebSocket.readyState === 1) {
+            // Forward audio to OpenAI
+            const audioPayload = {
+              type: 'input_audio_buffer.append',
+              audio: data.media.payload
+            };
+            openAIWebSocket.send(JSON.stringify(audioPayload));
+          } else {
+            logger.error(`No active OpenAI WebSocket for call: ${call_control_id}`);
+          }
+        }
+        
+        // Handle stop event
+        if (data.event === 'stop') {
+          logger.info(`Media stream stopped for call: ${call_control_id}`);
+        }
+      } catch (error) {
+        logger.error(`Error processing Telnyx message: ${error.message}`);
       }
+    });
 
-      const session = sessionStore.getSession(call_control_id);
-      
-      if (!session) {
-        logger.error(`No session found for call_control_id: ${call_control_id}`);
-        return res.status(200).send('OK');
-      }
+    ws.on('close', () => {
+      logger.info(`Telnyx WebSocket closed for call: ${call_control_id}`);
+    });
 
-      logger.info(`Audio chunk received for call ${call_control_id}, size: ${audioChunk.length}`);
-
-      const audioBuffer = Buffer.from(audioChunk, 'base64');
-      await sendAudioToOpenAI(call_control_id, audioBuffer);
-      
-      logger.info(`Audio forwarded to OpenAI for call: ${call_control_id}`);
-    } catch (error) {
-      logger.error(`Failed to process audio chunk for call ${call_control_id}: ${error.message}`);
-    }
-  } else {
-    logger.info(`Media stream event type ignored: ${event_type}`);
-  }
-
-  return res.status(200).send('OK');
+    ws.on('error', (error) => {
+      logger.error(`Telnyx WebSocket error: ${error.message}`);
+    });
+  });
 }
 
-module.exports = { handleMediaStream };
+module.exports = { setupMediaStreamWebSocket };

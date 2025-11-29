@@ -22,6 +22,30 @@ async function handleWebhook(req, res) {
   switch (event_type) {
     case 'call.initiated':
       logger.info(`Call initiated: ${call_control_id}`);
+      
+      try {
+        // Answer the call via Telnyx API
+        const answerResponse = await axios.post(
+          `${TELNYX_API_URL}/${call_control_id}/actions/answer`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${TELNYX_API_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        logger.info(`Telnyx answer response: ${JSON.stringify(answerResponse.data)}`);
+        logger.info(`Call answered via API: ${call_control_id}`);
+      } catch (error) {
+        logger.error(`Failed to answer call: ${error.message}`);
+        if (error.response) {
+          logger.error(`Telnyx API error response: ${JSON.stringify(error.response.data)}`);
+        }
+      }
+      
+      // Return XML response
       res.set('Content-Type', 'text/xml');
       return res.send(`<Response>
   <Say voice="female">Please wait while we connect you.</Say>
@@ -34,8 +58,8 @@ async function handleWebhook(req, res) {
         const ws = await connectToOpenAI(call_control_id);
         sessionStore.createSession(call_control_id, ws);
         logger.info(`OpenAI WebSocket connected and stored for call: ${call_control_id}`);
-
-        const streamUrl = `https://${req.get('host')}/media-stream`;
+        
+        const streamUrl = `wss://clean-middleware-test-1.onrender.com/media-stream`;
         
         const streamingResponse = await axios.post(
           `${TELNYX_API_URL}/${call_control_id}/actions/streaming_start`,
