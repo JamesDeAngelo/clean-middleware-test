@@ -25,7 +25,7 @@ const wss = new WebSocket.Server({
 setupMediaStreamWebSocket(wss);
 
 // Your existing HTTP routes
-app.post('/webhook', handleWebhook);
+app.post('/webhook/telnyx', handleWebhook);
 
 // Add other routes here if you have them
 
