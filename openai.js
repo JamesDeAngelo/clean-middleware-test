@@ -1,100 +1,85 @@
-const logger = require('./utils/logger');
+async function connectToOpenAI(callId) {
+  if (!callId) {
+    logger.error('Missing callId for OpenAI connection');
+    return null;
+  }
+  
+  // Return a Promise that resolves when WS is open
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(process.env.OPENAI_REALTIME_URL, {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'realtime=v1'
+      }
+    });
 
-if (!process.env.OPENAI_API_KEY) {
-  logger.error('Missing OPENAI_API_KEY in environment variables');
-}
+    ws.on('open', async () => {
+      logger.info('OpenAI WebSocket connected');
+      sessionStore.createSession(callId, ws);
+      
+      try {
+        const systemPrompt = await buildSystemPrompt();
+        const initPayload = await buildInitialRealtimePayload(systemPrompt);
+        ws.send(JSON.stringify(initPayload));
+        logger.info('Initial session.update payload sent to OpenAI');
+        
+        // Resolve the Promise now that WS is ready
+        resolve(ws);
+      } catch (error) {
+        logger.error`Failed to send initial payload: ${error.message}`);
+        reject(error);
+      }
+    });
 
-async function buildSystemPrompt() {
-  logger.info('Building system prompt');
-  return `You are a friendly, professional lawyer intake assistant. Your role is to gather client information efficiently, politely, and clearly during phone calls.
-
-Your responsibilities:
-- Introduce yourself politely at the start of the call
-- Ask questions step-by-step to collect necessary intake information
-- Confirm information back to the caller to ensure accuracy
-- Handle interruptions gracefully and guide the conversation back on track
-- Use natural-sounding phrasing with short, clear sentences
-
-Tone and style:
-- Speak in a calm, clear, human-like tone
-- Be warm but professional
-- Keep responses concise and actionable
-- Use conversational language suitable for text-to-speech
-
-Important constraints:
-- NEVER give legal advice
-- Only collect intake information
-- Do not ask for unnecessary details
-- Always remain polite and professional
-- If asked for legal advice, politely explain that you can only gather information and a lawyer will follow up
-
-Input/Output format:
-- You will receive telephony audio or text from the caller via WebSocket
-- Respond with plain text that will be converted to speech
-- Keep responses brief and natural for phone conversation`;
-}
-
-async function buildInitialRealtimePayload(systemPrompt) {
-  return {
-    type: "session.configure",
-    instructions: systemPrompt,
-    input_audio_format: "pcm16",
-    input_text_format: "input_text",
-    turn_detection: { type: "server_vad" },
-    output_audio_format: "pcm16",
-    response_format: "audio"
-  };
-}
-
-function sendTextToOpenAI(ws, text) {
-  try {
-    if (!ws || ws.readyState !== 1) {
-      logger.error('WebSocket is not open, cannot send text');
-      return;
-    }
-
-    ws.send(
-      JSON.stringify({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "assistant",
-          content: [{ type: "input_text", text }]
+    ws.on('message', async (data) => {
+      try {
+        const message = JSON.parse(data);
+        
+        logger.info`Received OpenAI event: ${message.type}`);
+        if (message.type === 'session.updated') {
+          logger.info('Session configuration confirmed');
         }
-      })
-    );
+        if (message.type === 'conversation.item.created') {
+          logger.info('Conversation item created');
+        }
+        if (message.type === 'response.output_item.added') {
+          logger.info('Response output item added');
+        }
+        if (message.type === 'input_audio_buffer.speech_started') {
+          logger.info('Speech detected, triggering response');
+          const responsePayload = {
+            type: 'response.create'
+          };
+          ws.send(JSON.stringify(responsePayload));
+        }
+        if (message.type === 'output_audio_buffer.delta' && message.audio) {
+          await sendAudioToTelnyx(callId, message.audio);
+        }
+        if (message.type === 'response.audio.delta' && message.delta) {
+          await sendAudioToTelnyx(callId, message.delta);
+        }
+        if (message.type === 'response.completed') {
+          logger.info('Response completed');
+        }
+        if (message.type === 'error') {
+          logger.error`OpenAI error: ${JSON.stringify(message.error)}`);
+        }
+        if (message.type === 'response.error') {
+          logger.error`Response error: ${JSON.stringify(message)}`);
+        }
+      } catch (error) {
+        logger.error`Failed to process OpenAI message: ${error.message}`);
+      }
+    });
 
-    ws.send(JSON.stringify({ type: "response.create" }));
+    ws.on('error', (error) => {
+      logger.error`WebSocket error: ${error.message}`);
+      reject(error);
+    });
 
-    logger.info('Assistant text sent to OpenAI');
-  } catch (error) {
-    logger.error(`Failed to send text to OpenAI: ${error.message}`);
-  }
+    ws.on('close', () => {
+      logger.info('OpenAI WebSocket closed');
+      sessionStore.deleteSession(callId);
+    });
+  });
 }
-
-function sendAudioToOpenAI(ws, audioBuffer) {
-  try {
-    if (!ws || ws.readyState !== 1) {
-      logger.error('WebSocket is not open, cannot send audio');
-      return;
-    }
-
-    ws.send(
-      JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: audioBuffer
-      })
-    );
-
-    logger.info('Audio chunk sent to OpenAI');
-  } catch (error) {
-    logger.error(`Failed to send audio to OpenAI: ${error.message}`);
-  }
-}
-
-module.exports = {
-  buildSystemPrompt,
-  buildInitialRealtimePayload,
-  sendTextToOpenAI,
-  sendAudioToOpenAI
-};

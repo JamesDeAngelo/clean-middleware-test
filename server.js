@@ -30,9 +30,9 @@ app.post('/webhook/telnyx', handleWebhook);
 // Add other routes here if you have them
 
 // Start the server
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   logger.info(`HTTP server listening on port ${PORT}`);
-  logger.info(`WebSocket server ready at ws://localhost:${PORT}/media-stream`);
+  logger.info(`WebSocket server ready at /media-stream`);
 });
 
 // Graceful shutdown

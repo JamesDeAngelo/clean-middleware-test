@@ -9,16 +9,16 @@ const TELNYX_API_URL = 'https://api.telnyx.com/v2/calls';
 async function handleWebhook(req, res) {
   logger.info('Webhook received');
   logger.info('Full payload: ' + JSON.stringify(req.body, null, 2));
-
+  
   const event_type = req.body?.data?.event_type;
   const payload = req.body?.data?.payload || {};
   const call_control_id = payload?.call_control_id;
-
+  
   if (!call_control_id) {
     logger.error('Missing call_control_id in webhook');
     return res.status(400).send('Missing call_control_id');
   }
-
+  
   switch (event_type) {
     case 'call.initiated':
       logger.info(`Call initiated: ${call_control_id}`);
@@ -55,17 +55,19 @@ async function handleWebhook(req, res) {
       logger.info(`Call answered: ${call_control_id}`);
       
       try {
+        // FIRST: Connect to OpenAI and wait for it to be ready
+        logger.info('Connecting to OpenAI WebSocket...');
         const ws = await connectToOpenAI(call_control_id);
-        sessionStore.createSession(call_control_id, ws);
         logger.info(`OpenAI WebSocket connected and stored for call: ${call_control_id}`);
         
+        // SECOND: Now that OpenAI is ready, start Telnyx streaming
         const streamUrl = `wss://clean-middleware-test-1.onrender.com/media-stream`;
         
         const streamingResponse = await axios.post(
           `${TELNYX_API_URL}/${call_control_id}/actions/streaming_start`,
           {
             stream_url: streamUrl,
-            stream_track: 'inbound_track'
+            stream_track: 'inbound'
           },
           {
             headers: {
@@ -86,6 +88,26 @@ async function handleWebhook(req, res) {
       
       return res.status(200).send('OK');
 
+    case 'streaming.stopped':
+      logger.info(`Streaming stopped for call: ${call_control_id}`);
+      
+      try {
+        const session = sessionStore.getSession(call_control_id);
+        
+        if (session) {
+          if (session.ws && session.ws.readyState === 1) {
+            session.ws.close();
+            logger.info(`WebSocket closed for call: ${call_control_id}`);
+          }
+          sessionStore.deleteSession(call_control_id);
+          logger.info(`Session deleted for call: ${call_control_id}`);
+        }
+      } catch (error) {
+        logger.error(`Failed to cleanup session on streaming.stopped: ${error.message}`);
+      }
+      
+      return res.status(200).send('OK');
+
     case 'call.hangup':
       logger.info(`Call hangup: ${call_control_id}`);
       
@@ -93,8 +115,8 @@ async function handleWebhook(req, res) {
         const session = sessionStore.getSession(call_control_id);
         
         if (session) {
-          if (session.readyState === 1) {
-            session.close();
+          if (session.ws && session.ws.readyState === 1) {
+            session.ws.close();
             logger.info(`WebSocket closed for call: ${call_control_id}`);
           }
           sessionStore.deleteSession(call_control_id);
