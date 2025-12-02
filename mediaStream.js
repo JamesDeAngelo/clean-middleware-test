@@ -1,80 +1,65 @@
 const logger = require('./utils/logger');
-const sessionStore = require('./utils/sessionStore');
+const { attachTelnyxStream, forwardAudioToOpenAI } = require('./websocket');
 
 function setupMediaStreamWebSocket(wss) {
+  logger.info('Setting up Media Stream WebSocket server');
+
   wss.on('connection', (ws, req) => {
-    logger.info('Telnyx WebSocket connection established');
-    
-    let call_control_id = null;
-    let isReceivingAudio = false;
-    
+    logger.info(`New WebSocket connection from: ${req.socket.remoteAddress}`);
+
+    let callId = null;
+    let streamSid = null;
+
     ws.on('message', (message) => {
       try {
-        const data = JSON.parse(message);
-        
-        // Extract call_control_id and stream_id from initial message
-        if (data.event === 'start' && data.start) {
-          call_control_id = data.start.call_control_id;
-          const stream_id = data.start.stream_id;
-          
-          logger.info(`Media stream started for call: ${call_control_id}`);
-          logger.info(`Stream ID: ${stream_id}`);
-          
-          // Ensure session exists and store stream_id
-          const session = sessionStore.getSession(call_control_id);
-          if (!session) {
-            logger.error(`Media stream event received with no active session`);
-            return;
-          }
-          
-          sessionStore.setStreamId(call_control_id, stream_id);
-        }
-        
-        // Handle media (audio) messages
-        if (data.event === 'media' && data.media) {
-          if (!call_control_id) {
-            logger.error('Received media without call_control_id');
-            return;
-          }
-          
-          const session = sessionStore.getSession(call_control_id);
-          
-          if (session && session.ws && session.ws.readyState === 1) {
-            // Track that we're receiving audio
-            if (!isReceivingAudio) {
-              isReceivingAudio = true;
-              logger.info(`Starting to receive audio for call: ${call_control_id}`);
-            }
+        const msg = JSON.parse(message.toString());
+        logger.info(`Received Telnyx message type: ${msg.event}`);
+
+        switch (msg.event) {
+          case 'start':
+            // Extract call control ID from the stream metadata
+            callId = msg.start?.call_control_id || msg.start?.callControlId;
+            streamSid = msg.start?.stream_sid || msg.start?.streamSid;
             
-            // Forward audio to OpenAI
-            const audioPayload = {
-              type: 'input_audio_buffer.append',
-              audio: data.media.payload
-            };
-            session.ws.send(JSON.stringify(audioPayload));
-          } else {
-            logger.error(`No active OpenAI WebSocket for call: ${call_control_id}`);
-          }
+            logger.info(`Stream started - Call ID: ${callId}, Stream SID: ${streamSid}`);
+            
+            if (callId) {
+              // Attach this Telnyx WebSocket to the OpenAI session
+              attachTelnyxStream(callId, ws);
+            } else {
+              logger.error('No call_control_id found in start event');
+            }
+            break;
+
+          case 'media':
+            // Forward incoming audio to OpenAI
+            if (msg.media && msg.media.payload && callId) {
+              forwardAudioToOpenAI(callId, msg.media.payload);
+            }
+            break;
+
+          case 'stop':
+            logger.info(`Stream stopped - Call ID: ${callId}`);
+            break;
+
+          default:
+            logger.info(`Unhandled Telnyx event: ${msg.event}`);
         }
-        
-        // Handle stop event
-        if (data.event === 'stop') {
-          logger.info(`Media stream stopped for call: ${call_control_id}`);
-          isReceivingAudio = false;
-        }
-      } catch (error) {
-        logger.error(`Error processing Telnyx message: ${error.message}`);
+      } catch (err) {
+        logger.error(`Error processing Telnyx message: ${err.message}`);
       }
     });
-    
+
     ws.on('close', () => {
-      logger.info(`Telnyx WebSocket closed for call: ${call_control_id}`);
+      logger.info(`WebSocket closed for call: ${callId}`);
     });
-    
-    ws.on('error', (error) => {
-      logger.error(`Telnyx WebSocket error: ${error.message}`);
+
+    ws.on('error', (err) => {
+      logger.error(`WebSocket error for call ${callId}: ${err.message}`);
     });
   });
+
+  logger.info('Media Stream WebSocket server ready');
 }
 
 module.exports = { setupMediaStreamWebSocket };

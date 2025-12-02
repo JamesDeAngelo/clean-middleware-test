@@ -6,131 +6,158 @@ const axios = require('axios');
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_API_URL = 'https://api.telnyx.com/v2/calls';
 
+// FIXED: Use wss:// protocol and correct URL format
+const RENDER_URL = process.env.RENDER_URL || `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
+
 async function handleWebhook(req, res) {
-  logger.info('Webhook received');
-  logger.info('Full payload: ' + JSON.stringify(req.body, null, 2));
-  
-  const event_type = req.body?.data?.event_type;
-  const payload = req.body?.data?.payload || {};
-  const call_control_id = payload?.call_control_id;
-  
-  if (!call_control_id) {
-    logger.error('Missing call_control_id in webhook');
-    return res.status(400).send('Missing call_control_id');
+  try {
+    logger.info('Webhook received');
+    logger.info(`Full webhook body: ${JSON.stringify(req.body)}`);
+    
+    const eventType = req.body?.data?.event_type;
+    const payload = req.body?.data?.payload || {};
+    const callControlId = payload?.call_control_id;
+    
+    logger.info(`Event: ${eventType}, Call ID: ${callControlId}`);
+    
+    if (!callControlId) {
+      logger.error('Missing call_control_id in webhook');
+      return res.status(400).send('Missing call_control_id');
+    }
+    
+    switch (eventType) {
+      case 'call.initiated':
+        await handleCallInitiated(callControlId, payload);
+        return res.status(200).send('OK');
+
+      case 'call.answered':
+        await handleCallAnswered(callControlId, payload);
+        return res.status(200).send('OK');
+
+      case 'streaming.started':
+        logger.info(`Streaming started for call: ${callControlId}`);
+        return res.status(200).send('OK');
+
+      case 'streaming.stopped':
+        await handleStreamingStopped(callControlId);
+        return res.status(200).send('OK');
+
+      case 'call.hangup':
+        await handleCallHangup(callControlId);
+        return res.status(200).send('OK');
+
+      default:
+        logger.info(`Unhandled event type: ${eventType}`);
+        return res.status(200).send('OK');
+    }
+    
+  } catch (error) {
+    logger.error(`Error handling webhook: ${error.message}`);
+    logger.error(`Error stack: ${error.stack}`);
+    return res.status(500).send('Internal Server Error');
   }
+}
+
+async function handleCallInitiated(callControlId, payload) {
+  logger.info(`Call initiated: ${callControlId}`);
   
-  switch (event_type) {
-    case 'call.initiated':
-      logger.info(`Call initiated: ${call_control_id}`);
-      
-      try {
-        // Answer the call via Telnyx API
-        const answerResponse = await axios.post(
-          `${TELNYX_API_URL}/${call_control_id}/actions/answer`,
-          {},
-          {
-            headers: {
-              'Authorization': `Bearer ${TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-        
-        logger.info(`Telnyx answer response: ${JSON.stringify(answerResponse.data)}`);
-        logger.info(`Call answered via API: ${call_control_id}`);
-      } catch (error) {
-        logger.error(`Failed to answer call: ${error.message}`);
-        if (error.response) {
-          logger.error(`Telnyx API error response: ${JSON.stringify(error.response.data)}`);
+  try {
+    // Answer the call
+    await axios.post(
+      `${TELNYX_API_URL}/${callControlId}/actions/answer`,
+      {},
+      {
+        headers: {
+          'Authorization': `Bearer ${TELNYX_API_KEY}`,
+          'Content-Type': 'application/json'
         }
       }
-      
-      // Return XML response
-      res.set('Content-Type', 'text/xml');
-      return res.send(`<Response>
-  <Say voice="female">Please wait while we connect you.</Say>
-</Response>`);
+    );
+    
+    logger.info(`Call answered: ${callControlId}`);
+  } catch (error) {
+    logger.error(`Failed to answer call: ${error.message}`);
+    if (error.response) {
+      logger.error(`Telnyx error: ${JSON.stringify(error.response.data)}`);
+    }
+  }
+}
 
-    case 'call.answered':
-      logger.info(`Call answered: ${call_control_id}`);
-      
-      try {
-        // FIRST: Connect to OpenAI and wait for it to be ready
-        logger.info('Connecting to OpenAI WebSocket...');
-        const ws = await connectToOpenAI(call_control_id);
-        logger.info(`OpenAI WebSocket connected and stored for call: ${call_control_id}`);
-        
-        // SECOND: Now that OpenAI is ready, start Telnyx streaming
-        const streamUrl = `wss://clean-middleware-test-1.onrender.com/media-stream`;
-        
-        const streamingResponse = await axios.post(
-          `${TELNYX_API_URL}/${call_control_id}/actions/streaming_start`,
-          {
-            stream_url: streamUrl,
-            stream_track: 'inbound'
-          },
-          {
-            headers: {
-              'Authorization': `Bearer ${TELNYX_API_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-        
-        logger.info(`Telnyx streaming_start response: ${JSON.stringify(streamingResponse.data)}`);
-        logger.info(`Telnyx audio streaming started for call: ${call_control_id} to ${streamUrl}`);
-      } catch (error) {
-        logger.error(`Failed to initialize call: ${error.message}`);
-        if (error.response) {
-          logger.error(`Telnyx API error response: ${JSON.stringify(error.response.data)}`);
+async function handleCallAnswered(callControlId, payload) {
+  logger.info(`Call answered event received: ${callControlId}`);
+  
+  try {
+    // STEP 1: Connect to OpenAI first
+    logger.info('Connecting to OpenAI WebSocket...');
+    await connectToOpenAI(callControlId);
+    logger.info(`OpenAI connected for call: ${callControlId}`);
+    
+    // STEP 2: Start Telnyx streaming to our WebSocket endpoint
+    const streamUrl = `${RENDER_URL}/media-stream`;
+    
+    logger.info(`Starting Telnyx stream to: ${streamUrl}`);
+    
+    await axios.post(
+      `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
+      {
+        stream_url: streamUrl,
+        stream_track: 'inbound_track'
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${TELNYX_API_KEY}`,
+          'Content-Type': 'application/json'
         }
       }
-      
-      return res.status(200).send('OK');
+    );
+    
+    logger.info(`Telnyx streaming started: ${callControlId} -> ${streamUrl}`);
+    
+  } catch (error) {
+    logger.error(`Failed to initialize call: ${error.message}`);
+    if (error.response) {
+      logger.error(`Telnyx error: ${JSON.stringify(error.response.data)}`);
+    }
+  }
+}
 
-    case 'streaming.stopped':
-      logger.info(`Streaming stopped for call: ${call_control_id}`);
-      
-      try {
-        const session = sessionStore.getSession(call_control_id);
-        
-        if (session) {
-          if (session.ws && session.ws.readyState === 1) {
-            session.ws.close();
-            logger.info(`WebSocket closed for call: ${call_control_id}`);
-          }
-          sessionStore.deleteSession(call_control_id);
-          logger.info(`Session deleted for call: ${call_control_id}`);
-        }
-      } catch (error) {
-        logger.error(`Failed to cleanup session on streaming.stopped: ${error.message}`);
+async function handleStreamingStopped(callControlId) {
+  logger.info(`Streaming stopped: ${callControlId}`);
+  
+  try {
+    const session = sessionStore.getSession(callControlId);
+    
+    if (session) {
+      if (session.ws && session.ws.readyState === 1) {
+        session.ws.close();
+        logger.info(`Closed OpenAI WebSocket for call: ${callControlId}`);
       }
       
-      return res.status(200).send('OK');
+      sessionStore.deleteSession(callControlId);
+      logger.info(`Session deleted: ${callControlId}`);
+    }
+  } catch (error) {
+    logger.error(`Cleanup error on streaming.stopped: ${error.message}`);
+  }
+}
 
-    case 'call.hangup':
-      logger.info(`Call hangup: ${call_control_id}`);
-      
-      try {
-        const session = sessionStore.getSession(call_control_id);
-        
-        if (session) {
-          if (session.ws && session.ws.readyState === 1) {
-            session.ws.close();
-            logger.info(`WebSocket closed for call: ${call_control_id}`);
-          }
-          sessionStore.deleteSession(call_control_id);
-          logger.info(`Session deleted for call: ${call_control_id}`);
-        }
-      } catch (error) {
-        logger.error(`Failed to cleanup session: ${error.message}`);
+async function handleCallHangup(callControlId) {
+  logger.info(`Call hangup: ${callControlId}`);
+  
+  try {
+    const session = sessionStore.getSession(callControlId);
+    
+    if (session) {
+      if (session.ws && session.ws.readyState === 1) {
+        session.ws.close();
+        logger.info(`Closed OpenAI WebSocket for call: ${callControlId}`);
       }
       
-      return res.status(200).send('OK');
-
-    default:
-      logger.info(`Unhandled event type: ${event_type}`);
-      return res.status(200).send('OK');
+      sessionStore.deleteSession(callControlId);
+      logger.info(`Session deleted: ${callControlId}`);
+    }
+  } catch (error) {
+    logger.error(`Cleanup error on hangup: ${error.message}`);
   }
 }
 

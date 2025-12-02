@@ -3,24 +3,34 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "airtable": "^0.12.2",
-    "axios": "^1.13.2",
+    "axios": "^1.6.0",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
-    "pino": "^10.1.0",
+    "pino": "^9.0.0",
+    "pino-pretty": "^11.0.0",
     "ws": "^8.18.3"
   },
-  "description": "",
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "description": "AI Voice Agent for PI Lawyers",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JamesDeAngelo/clean-middleware-test.git"
   },
-  "keywords": [],
+  "keywords": [
+    "telnyx",
+    "openai",
+    "voice-agent",
+    "websocket"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {

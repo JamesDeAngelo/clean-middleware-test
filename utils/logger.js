@@ -1,13 +1,15 @@
-function info(message) {
-  console.log(`[${new Date().toISOString()}] INFO: ${message}`);
-}
+const pino = require('pino');
 
-function error(message) {
-  console.log(`[${new Date().toISOString()}] ERROR: ${message}`);
-}
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'SYS:standard',
+      ignore: 'pid,hostname'
+    }
+  }
+});
 
-function warn(message) {
-  console.log(`[${new Date().toISOString()}] WARN: ${message}`);
-}
-
-module.exports = { info, error, warn };
+module.exports = logger;

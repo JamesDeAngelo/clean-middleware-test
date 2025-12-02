@@ -1,48 +1,61 @@
 const logger = require('./logger');
 
-const sessions = {};
+// In-memory session storage
+const sessions = new Map();
 
-function createSession(callId, ws) {
-  if (!sessions[callId]) {
-    sessions[callId] = {};
-  }
-  sessions[callId].ws = ws;
-  sessions[callId].readyState = ws.readyState;
-  sessions[callId].call_control_id = callId;
+function createSession(callId, openAIWebSocket) {
+  const session = {
+    callId,
+    ws: openAIWebSocket,
+    streamConnection: null,
+    createdAt: new Date()
+  };
+  
+  sessions.set(callId, session);
   logger.info(`Session created for call: ${callId}`);
+  
+  return session;
 }
 
 function getSession(callId) {
-  return sessions[callId];
+  return sessions.get(callId) || null;
+}
+
+function updateSession(callId, updates) {
+  const session = sessions.get(callId);
+  
+  if (!session) {
+    logger.error(`Cannot update: Session not found for call ${callId}`);
+    return null;
+  }
+  
+  const updatedSession = { ...session, ...updates };
+  sessions.set(callId, updatedSession);
+  logger.info(`Session updated for call: ${callId}`);
+  
+  return updatedSession;
 }
 
 function deleteSession(callId) {
-  if (sessions[callId]) {
-    delete sessions[callId];
+  const deleted = sessions.delete(callId);
+  
+  if (deleted) {
     logger.info(`Session deleted for call: ${callId}`);
+  } else {
+    logger.warn(`Attempted to delete non-existent session: ${callId}`);
   }
+  
+  return deleted;
 }
 
-function setStreamId(callId, streamId) {
-  if (!sessions[callId]) {
-    sessions[callId] = {};
-  }
-  sessions[callId].stream_id = streamId;
-  logger.info(`StreamId ${streamId} stored for call: ${callId}`);
-}
-
-function getStreamId(callId) {
-  const streamId = sessions[callId]?.stream_id;
-  if (!streamId) {
-    logger.error(`No streamId found for call: ${callId}`);
-  }
-  return streamId;
+function getAllSessions() {
+  return Array.from(sessions.values());
 }
 
 module.exports = {
   createSession,
   getSession,
+  updateSession,
   deleteSession,
-  setStreamId,
-  getStreamId
+  getAllSessions
 };

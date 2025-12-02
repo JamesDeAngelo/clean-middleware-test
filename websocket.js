@@ -48,21 +48,36 @@ async function connectToOpenAI(callId) {
       ws.on('message', (data) => {
         try {
           const msg = JSON.parse(data.toString());
-          logger.info(`Received message from OpenAI: ${JSON.stringify(msg)}`);
+          logger.info(`Received from OpenAI [${msg.type}]: ${msg.type === 'response.audio.delta' ? '[audio data]' : JSON.stringify(msg).substring(0, 200)}`);
 
           // AUDIO OUTPUT from OpenAI
-          if (msg.type === "response.audio.delta" && msg.audio) {
+          if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
             if (session && session.streamConnection) {
+              // FIXED: Use msg.delta instead of msg.audio
               // Forward OpenAI audio → Telnyx media stream
-              session.streamConnection.send(msg.audio);
+              const telnyxPayload = JSON.stringify({
+                event: 'media',
+                media: {
+                  payload: msg.delta
+                }
+              });
+              
+              session.streamConnection.send(telnyxPayload);
               logger.info(`Forwarded audio delta to Telnyx for call: ${callId}`);
+            } else {
+              logger.warn(`Cannot forward audio: No stream connection for call ${callId}`);
             }
           }
 
-          // TEXT OUTPUT from OpenAI (not required but good for logs)
-          if (msg.type === "response.output_text.delta") {
-            logger.info(`OpenAI text: ${msg.text}`);
+          // TEXT OUTPUT from OpenAI (for logging)
+          if (msg.type === "response.text.delta" || msg.type === "response.output_text.delta") {
+            logger.info(`OpenAI text: ${msg.delta || msg.text}`);
+          }
+
+          // Handle errors from OpenAI
+          if (msg.type === "error") {
+            logger.error(`OpenAI error: ${JSON.stringify(msg.error)}`);
           }
         } catch (err) {
           logger.error(`Failed to parse OpenAI message: ${err.message}`);
@@ -99,7 +114,8 @@ function attachTelnyxStream(callId, telnyxWs) {
   logger.info(`Attaching Telnyx stream socket to session for call: ${callId}`);
 
   session.streamConnection = telnyxWs;
-  sessionStore.createSession(callId, session.ws);
+  // FIXED: Update the session properly
+  sessionStore.updateSession(callId, session);
 }
 
 function forwardAudioToOpenAI(callId, audioBuffer) {

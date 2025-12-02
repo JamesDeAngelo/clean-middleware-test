@@ -17,17 +17,20 @@ const server = http.createServer(app);
 
 // Create WebSocket server on the same HTTP server
 const wss = new WebSocket.Server({ 
-  server,
-  path: '/media-stream'
+  server, 
+  path: '/media-stream' 
 });
 
 // Setup media stream WebSocket handling
 setupMediaStreamWebSocket(wss);
 
-// Your existing HTTP routes
-app.post('/webhook/telnyx', handleWebhook);
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
-// Add other routes here if you have them
+// Telnyx webhook endpoint
+app.post('/webhook/telnyx', handleWebhook);
 
 // Start the server
 server.listen(PORT, '0.0.0.0', () => {
