@@ -32,7 +32,7 @@ async function handleWebhook(req, res) {
         return res.status(200).send('OK');
 
       case 'streaming.started':
-        logger.info(`Streaming started for call: ${callControlId}`);
+        logger.info(`✓ Streaming started for call: ${callControlId}`);
         return res.status(200).send('OK');
 
       case 'streaming.stopped':
@@ -90,11 +90,12 @@ async function handleCallAnswered(callControlId, payload) {
     const streamUrl = `${RENDER_URL}/media-stream`;
     logger.info(`Starting Telnyx stream to: ${streamUrl}`);
     
+    // CRITICAL FIX: Use 'both_tracks' to enable bidirectional audio
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
       {
         stream_url: streamUrl,
-        stream_track: 'inbound_track'
+        stream_track: 'both_tracks'  // Changed from 'inbound_track'
       },
       {
         headers: {
@@ -104,7 +105,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info(`Telnyx streaming started: ${callControlId}`);
+    logger.info(`✓ Telnyx bidirectional streaming started`);
     
   } catch (error) {
     logger.error(`Failed to initialize call: ${error.message}`);
@@ -139,7 +140,7 @@ async function handleCallHangup(callControlId) {
   logger.info(`Call hangup: ${callControlId}`);
   
   try {
-    const session = sessionStore.getSession(callControlId);
+    const session = sessionStore.getSession(callId);
     
     if (session) {
       if (session.ws && session.ws.readyState === 1) {
