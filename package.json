@@ -7,10 +7,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "airtable": "^0.12.2",
     "axios": "^1.6.0",
-    "body-parser": "^1.20.3",
-    "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "pino": "^9.0.0",
@@ -19,22 +16,5 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
-  },
-  "description": "AI Voice Agent for PI Lawyers",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/JamesDeAngelo/clean-middleware-test.git"
-  },
-  "keywords": [
-    "telnyx",
-    "openai",
-    "voice-agent",
-    "websocket"
-  ],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/JamesDeAngelo/clean-middleware-test/issues"
-  },
-  "homepage": "https://github.com/JamesDeAngelo/clean-middleware-test#readme"
+  }
 }

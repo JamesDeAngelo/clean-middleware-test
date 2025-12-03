@@ -1,6 +1,5 @@
 const logger = require('./logger');
 
-// In-memory session storage
 const sessions = new Map();
 
 function createSession(callId, openAIWebSocket) {
@@ -31,7 +30,6 @@ function updateSession(callId, updates) {
   
   const updatedSession = { ...session, ...updates };
   sessions.set(callId, updatedSession);
-  logger.info(`Session updated for call: ${callId}`);
   
   return updatedSession;
 }
@@ -41,8 +39,6 @@ function deleteSession(callId) {
   
   if (deleted) {
     logger.info(`Session deleted for call: ${callId}`);
-  } else {
-    logger.warn(`Attempted to delete non-existent session: ${callId}`);
   }
   
   return deleted;

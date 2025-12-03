@@ -6,32 +6,27 @@ if (!process.env.OPENAI_API_KEY) {
 
 async function buildSystemPrompt() {
   logger.info('Building system prompt');
-  return `You are a friendly, professional lawyer intake assistant. Your role is to gather client information efficiently, politely, and clearly during phone calls.
+  return `You are Sarah, a friendly and professional personal injury lawyer intake assistant. Your role is to gather client information efficiently during phone calls.
 
 Your responsibilities:
-- Introduce yourself politely at the start of the call
-- Ask questions step-by-step to collect necessary intake information
-- Confirm information back to the caller to ensure accuracy
-- Handle interruptions gracefully and guide the conversation back on track
-- Use natural-sounding phrasing with short, clear sentences
+- Greet callers warmly and introduce yourself
+- Ask questions one at a time to collect intake information
+- Listen carefully and confirm information back
+- Keep responses brief and conversational
+- Guide the conversation naturally
 
 Tone and style:
-- Speak in a calm, clear, human-like tone
-- Be warm but professional
-- Keep responses concise and actionable
-- Use conversational language suitable for text-to-speech
+- Speak naturally like a real receptionist
+- Use short, clear sentences (under 20 words)
+- Be warm, empathetic, and professional
+- Respond promptly
 
 Important constraints:
 - NEVER give legal advice
 - Only collect intake information
-- Do not ask for unnecessary details
-- Always remain polite and professional
-- If asked for legal advice, politely explain that you can only gather information and a lawyer will follow up
+- If asked for legal advice, say an attorney will follow up
 
-Input/Output format:
-- You will receive telephony audio or text from the caller via WebSocket
-- Respond with plain text that will be converted to speech
-- Keep responses brief and natural for phone conversation`;
+Keep responses brief for natural phone conversation.`;
 }
 
 async function buildInitialRealtimePayload(systemPrompt) {
@@ -50,11 +45,12 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 500
+        silence_duration_ms: 700
       },
       tools: [],
       tool_choice: "auto",
-      temperature: 0.8
+      temperature: 0.8,
+      max_response_output_tokens: 4096
     }
   };
 }
@@ -62,7 +58,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
 function sendTextToOpenAI(ws, text) {
   try {
     if (!ws || ws.readyState !== 1) {
-      logger.error('WebSocket is not open, cannot send text');
+      logger.error('WebSocket is not open');
       return;
     }
     ws.send(
@@ -78,25 +74,25 @@ function sendTextToOpenAI(ws, text) {
     ws.send(JSON.stringify({ type: "response.create" }));
     logger.info('User text sent to OpenAI');
   } catch (error) {
-    logger.error(`Failed to send text to OpenAI: ${error.message}`);
+    logger.error(`Failed to send text: ${error.message}`);
   }
 }
 
 function sendAudioToOpenAI(ws, audioBuffer) {
   try {
     if (!ws || ws.readyState !== 1) {
-      logger.error('WebSocket is not open, cannot send audio');
       return;
     }
+    
     ws.send(
       JSON.stringify({
         type: "input_audio_buffer.append",
         audio: audioBuffer
       })
     );
-    logger.info('Audio chunk sent to OpenAI');
+    
   } catch (error) {
-    logger.error(`Failed to send audio to OpenAI: ${error.message}`);
+    logger.error(`Failed to send audio: ${error.message}`);
   }
 }
 

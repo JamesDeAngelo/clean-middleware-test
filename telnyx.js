@@ -5,14 +5,11 @@ const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
 const TELNYX_API_URL = 'https://api.telnyx.com/v2/calls';
-
-// FIXED: Use wss:// protocol and correct URL format
 const RENDER_URL = process.env.RENDER_URL || `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
 
 async function handleWebhook(req, res) {
   try {
     logger.info('Webhook received');
-    logger.info(`Full webhook body: ${JSON.stringify(req.body)}`);
     
     const eventType = req.body?.data?.event_type;
     const payload = req.body?.data?.payload || {};
@@ -53,7 +50,7 @@ async function handleWebhook(req, res) {
     
   } catch (error) {
     logger.error(`Error handling webhook: ${error.message}`);
-    logger.error(`Error stack: ${error.stack}`);
+    logger.error(`Stack trace: ${error.stack}`);
     return res.status(500).send('Internal Server Error');
   }
 }
@@ -62,7 +59,6 @@ async function handleCallInitiated(callControlId, payload) {
   logger.info(`Call initiated: ${callControlId}`);
   
   try {
-    // Answer the call
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
       {},
@@ -87,14 +83,11 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info(`Call answered event received: ${callControlId}`);
   
   try {
-    // STEP 1: Connect to OpenAI first
     logger.info('Connecting to OpenAI WebSocket...');
     await connectToOpenAI(callControlId);
     logger.info(`OpenAI connected for call: ${callControlId}`);
     
-    // STEP 2: Start Telnyx streaming to our WebSocket endpoint
     const streamUrl = `${RENDER_URL}/media-stream`;
-    
     logger.info(`Starting Telnyx stream to: ${streamUrl}`);
     
     await axios.post(
@@ -111,10 +104,11 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info(`Telnyx streaming started: ${callControlId} -> ${streamUrl}`);
+    logger.info(`Telnyx streaming started: ${callControlId}`);
     
   } catch (error) {
     logger.error(`Failed to initialize call: ${error.message}`);
+    logger.error(`Stack trace: ${error.stack}`);
     if (error.response) {
       logger.error(`Telnyx error: ${JSON.stringify(error.response.data)}`);
     }
