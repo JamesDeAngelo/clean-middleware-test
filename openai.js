@@ -1,32 +1,28 @@
 const logger = require('./utils/logger');
 
 if (!process.env.OPENAI_API_KEY) {
-  logger.error('Missing OPENAI_API_KEY in environment variables');
+  logger.error('Missing OPENAI_API_KEY');
 }
 
 async function buildSystemPrompt() {
-  logger.info('Building system prompt');
-  return `You are Sarah, a friendly and professional personal injury lawyer intake assistant. Your role is to gather client information efficiently during phone calls.
+  return `You are Sarah, a friendly personal injury lawyer intake assistant.
 
-Your responsibilities:
-- Greet callers warmly and introduce yourself
-- Ask questions one at a time to collect intake information
-- Listen carefully and confirm information back
-- Keep responses brief and conversational
-- Guide the conversation naturally
+Your job:
+- Greet callers warmly
+- Ask simple questions one at a time
+- Listen and confirm what they say
+- Keep responses SHORT (under 15 words)
 
-Tone and style:
-- Speak naturally like a real receptionist
-- Use short, clear sentences (under 20 words)
-- Be warm, empathetic, and professional
-- Respond promptly
+Style:
+- Talk like a real person
+- Be warm and professional
+- Use short sentences
+- Respond quickly
 
-Important constraints:
+Rules:
 - NEVER give legal advice
-- Only collect intake information
-- If asked for legal advice, say an attorney will follow up
-
-Keep responses brief for natural phone conversation.`;
+- Only collect information
+- Be helpful and kind`;
 }
 
 async function buildInitialRealtimePayload(systemPrompt) {
@@ -45,55 +41,36 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 700
+        silence_duration_ms: 500
       },
-      tools: [],
-      tool_choice: "auto",
       temperature: 0.8,
-      max_response_output_tokens: 4096
+      max_response_output_tokens: 2048
     }
   };
 }
 
 function sendTextToOpenAI(ws, text) {
-  try {
-    if (!ws || ws.readyState !== 1) {
-      logger.error('WebSocket is not open');
-      return;
+  if (ws?.readyState !== 1) return;
+  
+  ws.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }]
     }
-    ws.send(
-      JSON.stringify({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text }]
-        }
-      })
-    );
-    ws.send(JSON.stringify({ type: "response.create" }));
-    logger.info('User text sent to OpenAI');
-  } catch (error) {
-    logger.error(`Failed to send text: ${error.message}`);
-  }
+  }));
+  
+  ws.send(JSON.stringify({ type: "response.create" }));
 }
 
 function sendAudioToOpenAI(ws, audioBuffer) {
-  try {
-    if (!ws || ws.readyState !== 1) {
-      return;
-    }
-    
-    ws.send(
-      JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: audioBuffer
-      })
-    );
-    
-  } catch (error) {
-    logger.error(`Failed to send audio: ${error.message}`);
-  }
+  if (ws?.readyState !== 1) return;
+  
+  ws.send(JSON.stringify({
+    type: "input_audio_buffer.append",
+    audio: audioBuffer
+  }));
 }
 
 module.exports = {
