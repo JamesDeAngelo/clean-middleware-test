@@ -79,18 +79,20 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // CRITICAL: Configure audio format to match OpenAI
+    // CRITICAL: Use L16 codec (linear PCM) for AI integrations
+    // This matches OpenAI's PCM16 format without transcoding
+    const streamingConfig = {
+      stream_url: streamUrl,
+      stream_track: 'both_tracks',
+      codec: 'L16',           // Linear PCM codec
+      sample_rate: 24000      // Match OpenAI's 24kHz
+    };
+    
+    logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
+    
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
-      {
-        stream_url: streamUrl,
-        stream_track: 'both_tracks',
-        // Specify audio format to match OpenAI's PCM16
-        audio_format: {
-          encoding: 'linear16',  // PCM16 format
-          sample_rate: 24000     // Match OpenAI's sample rate
-        }
-      },
+      streamingConfig,
       {
         headers: {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
@@ -99,7 +101,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info(`✓ Streaming started with PCM16 format`);
+    logger.info(`✓ Streaming started with L16 codec @ 24kHz`);
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);

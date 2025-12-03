@@ -28,12 +28,12 @@ async function connectToOpenAI(callId) {
         ws.send(JSON.stringify(initPayload));
         sessionStore.createSession(callId, ws);
 
-        // Trigger greeting after 800ms
+        // FIXED: Use both 'text' and 'audio' modalities
         setTimeout(() => {
           ws.send(JSON.stringify({
             type: "response.create",
             response: {
-              modalities: ["audio"],
+              modalities: ["text", "audio"],  // MUST include both
               instructions: "Say: Hi! This is Sarah from the law office. How can I help you today?"
             }
           }));
@@ -54,6 +54,7 @@ async function connectToOpenAI(callId) {
                 event: 'media',
                 media: { payload: msg.delta }
               }));
+              logger.info(`🔊 Audio sent`);
             }
           }
 
@@ -61,12 +62,20 @@ async function connectToOpenAI(callId) {
             logger.info(`🎤 User speaking`);
           }
 
+          if (msg.type === "input_audio_buffer.speech_stopped") {
+            logger.info(`🔇 User stopped`);
+          }
+
           if (msg.type === "conversation.item.input_audio_transcription.completed") {
             logger.info(`User: "${msg.transcript}"`);
           }
 
+          if (msg.type === "response.done") {
+            logger.info(`✓ Response complete`);
+          }
+
           if (msg.type === "error") {
-            logger.error(`OpenAI error: ${JSON.stringify(msg.error)}`);
+            logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
         } catch (err) {
