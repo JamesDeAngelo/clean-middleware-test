@@ -50,7 +50,10 @@ async function buildInitialRealtimePayload(systemPrompt) {
 }
 
 function sendTextToOpenAI(ws, text) {
-  if (ws?.readyState !== 1) return;
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send text - WebSocket not open');
+    return;
+  }
   
   ws.send(JSON.stringify({
     type: "conversation.item.create",
@@ -62,10 +65,15 @@ function sendTextToOpenAI(ws, text) {
   }));
   
   ws.send(JSON.stringify({ type: "response.create" }));
+  
+  logger.info(`📝 Text sent to OpenAI: "${text}"`);
 }
 
 function sendAudioToOpenAI(ws, audioBuffer) {
-  if (ws?.readyState !== 1) return;
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send audio - WebSocket not open');
+    return;
+  }
   
   ws.send(JSON.stringify({
     type: "input_audio_buffer.append",
