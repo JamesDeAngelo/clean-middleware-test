@@ -23,23 +23,18 @@ async function handleWebhook(req, res) {
       case 'call.initiated':
         await handleCallInitiated(callControlId, payload);
         return res.status(200).send('OK');
-
       case 'call.answered':
         await handleCallAnswered(callControlId, payload);
         return res.status(200).send('OK');
-
       case 'streaming.started':
-        logger.info(`✓ Streaming started`);
+        logger.info('✓ Streaming started');
         return res.status(200).send('OK');
-
       case 'streaming.stopped':
         await handleStreamingStopped(callControlId);
         return res.status(200).send('OK');
-
       case 'call.hangup':
         await handleCallHangup(callControlId);
         return res.status(200).send('OK');
-
       default:
         return res.status(200).send('OK');
     }
@@ -51,7 +46,7 @@ async function handleWebhook(req, res) {
 }
 
 async function handleCallInitiated(callControlId, payload) {
-  logger.info(`📞 Call initiated`);
+  logger.info('📞 Call initiated');
   
   try {
     await axios.post(
@@ -65,27 +60,32 @@ async function handleCallInitiated(callControlId, payload) {
       }
     );
     
-    logger.info(`✓ Call answered`);
+    logger.info('✓ Call answered');
   } catch (error) {
     logger.error(`Failed to answer: ${error.message}`);
   }
 }
 
 async function handleCallAnswered(callControlId, payload) {
-  logger.info(`✓ Call answered event`);
+  logger.info('✓ Call answered event');
   
   try {
     await connectToOpenAI(callControlId);
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // CRITICAL: Use L16 codec (linear PCM) for AI integrations
-    // This matches OpenAI's PCM16 format without transcoding
+    // FIXED: Request PCM16 format at 24kHz to match OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      codec: 'L16',           // Linear PCM codec
-      sample_rate: 24000      // Match OpenAI's 24kHz
+      enable_dialogflow: false,
+      // Request raw PCM audio
+      media_format: {
+        codec: 'RAW',
+        sample_rate: 24000,
+        channels: 1,
+        bit_depth: 16
+      }
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
@@ -101,7 +101,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info(`✓ Streaming started with L16 codec @ 24kHz`);
+    logger.info('✓ Streaming started with RAW PCM @ 24kHz');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -119,7 +119,7 @@ async function handleStreamingStopped(callControlId) {
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info(`✓ Cleanup completed`);
+  logger.info('✓ Cleanup completed');
 }
 
 async function handleCallHangup(callControlId) {
@@ -130,7 +130,7 @@ async function handleCallHangup(callControlId) {
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info(`✓ Call ended`);
+  logger.info('✓ Call ended');
 }
 
 module.exports = { handleWebhook };
