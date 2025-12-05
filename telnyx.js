@@ -80,13 +80,11 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // CRITICAL FIX: Use PCMU (mu-law) which Telnyx supports natively
-    // This matches what Telnyx actually sends us
+    // FIXED: Correct enum value and use default Telnyx format
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'inbound',  // Only get caller audio
+      stream_track: 'both_tracks',  // FIXED: was 'inbound', needs to be 'both_tracks'
       enable_dialogflow: false
-      // Let Telnyx use its default format (PCMU @ 8kHz)
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
