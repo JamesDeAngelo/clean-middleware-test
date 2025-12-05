@@ -29,7 +29,7 @@ async function connectToOpenAI(callId) {
         
         sessionStore.createSession(callId, ws);
         
-        // Wait longer for connection to stabilize
+        // Wait for connection to stabilize
         setTimeout(() => {
           ws.send(JSON.stringify({
             type: "response.create",
@@ -48,24 +48,23 @@ async function connectToOpenAI(callId) {
         try {
           const msg = JSON.parse(data.toString());
           
-          // FIXED: Proper audio forwarding to Telnyx
+          // Handle audio from OpenAI
           if (msg.type === "response.audio.delta" && msg.delta) {
-            logger.info(`🔊 Received ${msg.delta.length} bytes of audio from OpenAI`);
-            
             const session = sessionStore.getSession(callId);
             
             if (session?.streamConnection?.readyState === 1) {
-              // Send audio back to Telnyx in correct format
-              session.streamConnection.send(JSON.stringify({
+              // CRITICAL FIX: Send as base64 with proper event structure
+              const audioPayload = {
                 event: 'media',
-                stream_id: callId,
                 media: {
-                  payload: msg.delta
+                  payload: msg.delta  // Already base64 from OpenAI
                 }
-              }));
-              logger.info('📤 Audio forwarded to Telnyx');
+              };
+              
+              session.streamConnection.send(JSON.stringify(audioPayload));
+              logger.info(`📤 Sent ${msg.delta.length} chars of audio to Telnyx`);
             } else {
-              logger.error(`❌ Cannot send audio - streamConnection state: ${session?.streamConnection?.readyState}`);
+              logger.error(`❌ Cannot send audio - streamConnection not ready`);
             }
           }
 

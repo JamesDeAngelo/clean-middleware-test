@@ -32,8 +32,9 @@ async function buildInitialRealtimePayload(systemPrompt) {
       modalities: ["text", "audio"],
       instructions: systemPrompt,
       voice: "alloy",
-      input_audio_format: "pcm16",
-      output_audio_format: "pcm16",
+      // CRITICAL: Use G.711 formats that Telnyx supports
+      input_audio_format: "g711_ulaw",
+      output_audio_format: "g711_ulaw",
       input_audio_transcription: {
         model: "whisper-1"
       },

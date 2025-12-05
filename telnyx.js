@@ -23,18 +23,23 @@ async function handleWebhook(req, res) {
       case 'call.initiated':
         await handleCallInitiated(callControlId, payload);
         return res.status(200).send('OK');
+        
       case 'call.answered':
         await handleCallAnswered(callControlId, payload);
         return res.status(200).send('OK');
+        
       case 'streaming.started':
         logger.info('✓ Streaming started');
         return res.status(200).send('OK');
+        
       case 'streaming.stopped':
         await handleStreamingStopped(callControlId);
         return res.status(200).send('OK');
+        
       case 'call.hangup':
         await handleCallHangup(callControlId);
         return res.status(200).send('OK');
+        
       default:
         return res.status(200).send('OK');
     }
@@ -70,22 +75,18 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
+    // Connect to OpenAI first
     await connectToOpenAI(callControlId);
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // FIXED: Request PCM16 format at 24kHz to match OpenAI
+    // CRITICAL FIX: Use PCMU (mu-law) which Telnyx supports natively
+    // This matches what Telnyx actually sends us
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',
-      enable_dialogflow: false,
-      // Request raw PCM audio
-      media_format: {
-        codec: 'RAW',
-        sample_rate: 24000,
-        channels: 1,
-        bit_depth: 16
-      }
+      stream_track: 'inbound',  // Only get caller audio
+      enable_dialogflow: false
+      // Let Telnyx use its default format (PCMU @ 8kHz)
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
@@ -101,7 +102,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with RAW PCM @ 24kHz');
+    logger.info('✓ Streaming started');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);

@@ -3,17 +3,17 @@ const { attachTelnyxStream, forwardAudioToOpenAI } = require('./websocket');
 
 function setupMediaStreamWebSocket(wss) {
   logger.info('Media Stream WebSocket ready');
-
+  
   wss.on('connection', (ws) => {
     let callId = null;
     let chunkCount = 0;
-
+    
     logger.info('📞 New WebSocket connection established');
-
+    
     ws.on('message', (message) => {
       try {
         const msg = JSON.parse(message.toString());
-
+        
         if (msg.event === 'start') {
           callId = msg.start?.call_control_id;
           logger.info(`📞 Stream started for call: ${callId}`);
@@ -25,7 +25,7 @@ function setupMediaStreamWebSocket(wss) {
             logger.error('❌ No call_control_id in start event');
           }
         }
-
+        
         if (msg.event === 'media' && msg.media?.payload && callId) {
           chunkCount++;
           
@@ -36,20 +36,20 @@ function setupMediaStreamWebSocket(wss) {
           // Forward inbound audio to OpenAI
           forwardAudioToOpenAI(callId, msg.media.payload);
         }
-
+        
         if (msg.event === 'stop') {
           logger.info(`Stream ended: ${chunkCount} total chunks`);
         }
-
+        
       } catch (err) {
         logger.error(`Message error: ${err.message}`);
       }
     });
-
+    
     ws.on('error', (err) => {
       logger.error(`WS error: ${err.message}`);
     });
-
+    
     ws.on('close', () => {
       logger.info(`WebSocket closed for call: ${callId}`);
     });
