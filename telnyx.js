@@ -80,11 +80,17 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // FIXED: Correct enum value and use default Telnyx format
+    // Request PCM16 format at 24kHz to match OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',  // FIXED: was 'inbound', needs to be 'both_tracks'
-      enable_dialogflow: false
+      stream_track: 'both_tracks',
+      enable_dialogflow: false,
+      media_format: {
+        codec: 'RAW',
+        sample_rate: 24000,
+        channels: 1,
+        bit_depth: 16
+      }
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
@@ -100,7 +106,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started');
+    logger.info('✓ Streaming started with RAW PCM @ 24kHz');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
