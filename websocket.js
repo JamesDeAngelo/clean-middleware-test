@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
+const audioBuffer = require('./audioBuffer');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
@@ -56,30 +57,13 @@ async function connectToOpenAI(callId) {
               return;
             }
             
-            if (!session.streamConnection) {
-              logger.error(`❌ NO streamConnection in session`);
-              return;
-            }
-            
-            if (session.streamConnection.readyState !== 1) {
-              logger.error(`❌ streamConnection not ready. State: ${session.streamConnection.readyState}`);
-              return;
-            }
-            
-            // Send audio to Telnyx
-            const audioPayload = {
-              event: 'media',
-              media: {
-                payload: msg.delta
-              }
-            };
-            
-            session.streamConnection.send(JSON.stringify(audioPayload));
+            // Buffer audio instead of sending directly
+            audioBuffer.addChunk(callId, msg.delta);
             audioChunksSent++;
             
             // Log every 10 chunks so we see it's working
             if (audioChunksSent % 10 === 0) {
-              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
+              logger.info(`📥 Buffered ${audioChunksSent} audio chunks from OpenAI`);
             }
           }
 
@@ -100,7 +84,16 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks total)`);
+            logger.info(`✓ Response complete (buffered ${audioChunksSent} audio chunks total)`);
+            
+            // Flush audio buffer to Telnyx
+            const session = sessionStore.getSession(callId);
+            if (session?.callControlId) {
+              await audioBuffer.flushBuffer(callId, session.callControlId);
+            } else {
+              logger.error(`❌ Cannot flush audio - no callControlId in session`);
+            }
+            
             audioChunksSent = 0; // Reset for next response
           }
 

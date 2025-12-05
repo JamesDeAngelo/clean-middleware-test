@@ -75,15 +75,22 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
-    // Connect to OpenAI first
+    // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
+    
+    // Store callControlId in the session so we can use it later
+    const session = sessionStore.getSession(callControlId);
+    if (session) {
+      session.callControlId = callControlId;
+      sessionStore.updateSession(callControlId, session);
+    }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
     // CRITICAL FIX: Request PCMU (G.711 µ-law) @ 8kHz to match OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',
+      stream_track: 'inbound',  // Only receive user audio, we'll use playback API for output
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',  // G.711 µ-law encoding
@@ -105,7 +112,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with PCMU @ 8kHz');
+    logger.info('✓ Streaming started with PCMU @ 8kHz (inbound only)');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
