@@ -19,6 +19,8 @@ async function connectToOpenAI(callId) {
         }
       });
 
+      let audioChunksSent = 0;
+
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
         
@@ -36,29 +38,48 @@ async function connectToOpenAI(callId) {
         try {
           const msg = JSON.parse(data.toString());
           
+          // DEBUG: Log ALL message types to see what we're getting
+          if (msg.type !== "response.audio.delta" && 
+              msg.type !== "response.audio_transcript.delta" &&
+              msg.type !== "input_audio_buffer.speech_started" &&
+              msg.type !== "input_audio_buffer.speech_stopped") {
+            logger.info(`🔵 OpenAI event: ${msg.type}`);
+          }
+          
           // Handle audio from OpenAI
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
             
-            if (session?.streamConnection?.readyState === 1) {
-              // Send PCM16 audio back to Telnyx
-              const audioPayload = {
-                event: 'media',
-                media: {
-                  payload: msg.delta  // Already base64 from OpenAI
-                }
-              };
-              
-              session.streamConnection.send(JSON.stringify(audioPayload));
-              
-              // Less verbose logging
-              if (!session.audioLogCount) session.audioLogCount = 0;
-              session.audioLogCount++;
-              if (session.audioLogCount % 50 === 0) {
-                logger.info(`📤 Sent ${session.audioLogCount} audio chunks to Telnyx`);
+            // DEBUG: Log session state
+            if (!session) {
+              logger.error(`❌ NO SESSION found for callId: ${callId}`);
+              return;
+            }
+            
+            if (!session.streamConnection) {
+              logger.error(`❌ NO streamConnection in session`);
+              return;
+            }
+            
+            if (session.streamConnection.readyState !== 1) {
+              logger.error(`❌ streamConnection not ready. State: ${session.streamConnection.readyState}`);
+              return;
+            }
+            
+            // Send audio to Telnyx
+            const audioPayload = {
+              event: 'media',
+              media: {
+                payload: msg.delta
               }
-            } else {
-              logger.error(`❌ Cannot send audio - streamConnection not ready`);
+            };
+            
+            session.streamConnection.send(JSON.stringify(audioPayload));
+            audioChunksSent++;
+            
+            // Log every 10 chunks so we see it's working
+            if (audioChunksSent % 10 === 0) {
+              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
             }
           }
 
@@ -79,20 +100,25 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "response.done") {
-            logger.info('✓ Response complete');
+            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks total)`);
+            audioChunksSent = 0; // Reset for next response
           }
 
           if (msg.type === "error") {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
-          // FIXED: Wait for session.created before sending greeting
+          // Wait for session.created before sending greeting
           if (msg.type === "session.created") {
             logger.info('✓ OpenAI session ready');
-            // Trigger greeting after session is confirmed ready
             setTimeout(() => {
               triggerGreeting(ws);
             }, 500);
+          }
+          
+          // CRITICAL: Log if we get session.updated
+          if (msg.type === "session.updated") {
+            logger.info(`✓ Session updated. Audio formats: in=${msg.session?.input_audio_format}, out=${msg.session?.output_audio_format}`);
           }
 
         } catch (err) {
@@ -137,21 +163,34 @@ function attachTelnyxStream(callId, telnyxWs) {
   const session = sessionStore.getSession(callId);
   
   if (!session) {
-    logger.error(`No session for: ${callId}`);
+    logger.error(`❌ Cannot attach stream - No session for: ${callId}`);
     return;
   }
   
   session.streamConnection = telnyxWs;
   sessionStore.updateSession(callId, session);
-  logger.info('✓ Stream attached');
+  logger.info(`✓ Stream attached. WebSocket state: ${telnyxWs.readyState}`);
 }
 
 function forwardAudioToOpenAI(callId, audioBuffer) {
   const session = sessionStore.getSession(callId);
   
-  if (session?.ws) {
-    sendAudioToOpenAI(session.ws, audioBuffer);
+  if (!session) {
+    logger.error(`❌ Cannot forward audio - No session for: ${callId}`);
+    return;
   }
+  
+  if (!session.ws) {
+    logger.error(`❌ Cannot forward audio - No OpenAI ws in session`);
+    return;
+  }
+  
+  if (session.ws.readyState !== 1) {
+    logger.error(`❌ Cannot forward audio - OpenAI ws not ready. State: ${session.ws.readyState}`);
+    return;
+  }
+  
+  sendAudioToOpenAI(session.ws, audioBuffer);
 }
 
 module.exports = {
