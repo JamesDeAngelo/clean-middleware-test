@@ -29,18 +29,6 @@ async function connectToOpenAI(callId) {
         
         sessionStore.createSession(callId, ws);
         
-        // Wait for connection to stabilize
-        setTimeout(() => {
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["text", "audio"],
-              instructions: "Say: Hi! This is Sarah from the law office. How can I help you today?"
-            }
-          }));
-          logger.info('🎙️ Greeting triggered');
-        }, 1500);
-        
         resolve(ws);
       });
 
@@ -53,7 +41,7 @@ async function connectToOpenAI(callId) {
             const session = sessionStore.getSession(callId);
             
             if (session?.streamConnection?.readyState === 1) {
-              // CRITICAL FIX: Send as base64 with proper event structure
+              // Send PCM16 audio back to Telnyx
               const audioPayload = {
                 event: 'media',
                 media: {
@@ -62,7 +50,13 @@ async function connectToOpenAI(callId) {
               };
               
               session.streamConnection.send(JSON.stringify(audioPayload));
-              logger.info(`📤 Sent ${msg.delta.length} chars of audio to Telnyx`);
+              
+              // Less verbose logging
+              if (!session.audioLogCount) session.audioLogCount = 0;
+              session.audioLogCount++;
+              if (session.audioLogCount % 50 === 0) {
+                logger.info(`📤 Sent ${session.audioLogCount} audio chunks to Telnyx`);
+              }
             } else {
               logger.error(`❌ Cannot send audio - streamConnection not ready`);
             }
@@ -92,6 +86,15 @@ async function connectToOpenAI(callId) {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
+          // FIXED: Wait for session.created before sending greeting
+          if (msg.type === "session.created") {
+            logger.info('✓ OpenAI session ready');
+            // Trigger greeting after session is confirmed ready
+            setTimeout(() => {
+              triggerGreeting(ws);
+            }, 500);
+          }
+
         } catch (err) {
           logger.error(`Parse error: ${err.message}`);
         }
@@ -111,6 +114,23 @@ async function connectToOpenAI(callId) {
       reject(error);
     }
   });
+}
+
+function triggerGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot trigger greeting - WebSocket not open');
+    return;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "Say: Hi! This is Sarah from the law office. How can I help you today?"
+    }
+  }));
+  
+  logger.info('🎙️ Greeting triggered');
 }
 
 function attachTelnyxStream(callId, telnyxWs) {
