@@ -35,11 +35,11 @@ async function connectToOpenAI(callId) {
         resolve(ws);
       });
 
-      ws.on('message', (data) => {
+      // ✅ FIXED: Added async here
+      ws.on('message', async (data) => {
         try {
           const msg = JSON.parse(data.toString());
           
-          // DEBUG: Log ALL message types to see what we're getting
           if (msg.type !== "response.audio.delta" && 
               msg.type !== "response.audio_transcript.delta" &&
               msg.type !== "input_audio_buffer.speech_started" &&
@@ -47,21 +47,14 @@ async function connectToOpenAI(callId) {
             logger.info(`🔵 OpenAI event: ${msg.type}`);
           }
           
-          // Handle audio from OpenAI
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
-            
-            // DEBUG: Log session state
             if (!session) {
               logger.error(`❌ NO SESSION found for callId: ${callId}`);
               return;
             }
-            
-            // Buffer audio instead of sending directly
             audioBuffer.addChunk(callId, msg.delta);
             audioChunksSent++;
-            
-            // Log every 10 chunks so we see it's working
             if (audioChunksSent % 10 === 0) {
               logger.info(`📥 Buffered ${audioChunksSent} audio chunks from OpenAI`);
             }
@@ -85,23 +78,19 @@ async function connectToOpenAI(callId) {
 
           if (msg.type === "response.done") {
             logger.info(`✓ Response complete (buffered ${audioChunksSent} audio chunks total)`);
-            
-            // Flush audio buffer to Telnyx
             const session = sessionStore.getSession(callId);
             if (session?.callControlId) {
               await audioBuffer.flushBuffer(callId, session.callControlId);
             } else {
               logger.error(`❌ Cannot flush audio - no callControlId in session`);
             }
-            
-            audioChunksSent = 0; // Reset for next response
+            audioChunksSent = 0;
           }
 
           if (msg.type === "error") {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
-          // Wait for session.created before sending greeting
           if (msg.type === "session.created") {
             logger.info('✓ OpenAI session ready');
             setTimeout(() => {
@@ -109,7 +98,6 @@ async function connectToOpenAI(callId) {
             }, 500);
           }
           
-          // CRITICAL: Log if we get session.updated
           if (msg.type === "session.updated") {
             logger.info(`✓ Session updated. Audio formats: in=${msg.session?.input_audio_format}, out=${msg.session?.output_audio_format}`);
           }
