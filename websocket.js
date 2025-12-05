@@ -1,7 +1,6 @@
 const WebSocket = require('ws');
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
-const audioBuffer = require('./audioBuffer');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
@@ -35,28 +34,44 @@ async function connectToOpenAI(callId) {
         resolve(ws);
       });
 
-      // ✅ FIXED: Added async here
-      ws.on('message', async (data) => {
+      ws.on('message', (data) => {
         try {
           const msg = JSON.parse(data.toString());
           
-          if (msg.type !== "response.audio.delta" && 
-              msg.type !== "response.audio_transcript.delta" &&
-              msg.type !== "input_audio_buffer.speech_started" &&
-              msg.type !== "input_audio_buffer.speech_stopped") {
-            logger.info(`🔵 OpenAI event: ${msg.type}`);
-          }
-          
+          // Handle audio from OpenAI - SEND DIRECTLY BACK TO TELNYX
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
+            
             if (!session) {
               logger.error(`❌ NO SESSION found for callId: ${callId}`);
               return;
             }
-            audioBuffer.addChunk(callId, msg.delta);
+            
+            if (!session.streamConnection) {
+              logger.error(`❌ NO streamConnection in session`);
+              return;
+            }
+            
+            if (session.streamConnection.readyState !== 1) {
+              logger.error(`❌ streamConnection not ready. State: ${session.streamConnection.readyState}`);
+              return;
+            }
+            
+            // Send audio DIRECTLY back to Telnyx via WebSocket
+            const audioPayload = {
+              event: 'media',
+              stream_sid: session.streamSid,
+              media: {
+                track: 'outbound',
+                payload: msg.delta
+              }
+            };
+            
+            session.streamConnection.send(JSON.stringify(audioPayload));
             audioChunksSent++;
-            if (audioChunksSent % 10 === 0) {
-              logger.info(`📥 Buffered ${audioChunksSent} audio chunks from OpenAI`);
+            
+            if (audioChunksSent % 20 === 0) {
+              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
             }
           }
 
@@ -77,13 +92,7 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (buffered ${audioChunksSent} audio chunks total)`);
-            const session = sessionStore.getSession(callId);
-            if (session?.callControlId) {
-              await audioBuffer.flushBuffer(callId, session.callControlId);
-            } else {
-              logger.error(`❌ Cannot flush audio - no callControlId in session`);
-            }
+            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
             audioChunksSent = 0;
           }
 
@@ -140,7 +149,7 @@ function triggerGreeting(ws) {
   logger.info('🎙️ Greeting triggered');
 }
 
-function attachTelnyxStream(callId, telnyxWs) {
+function attachTelnyxStream(callId, telnyxWs, streamSid) {
   const session = sessionStore.getSession(callId);
   
   if (!session) {
@@ -149,6 +158,7 @@ function attachTelnyxStream(callId, telnyxWs) {
   }
   
   session.streamConnection = telnyxWs;
+  session.streamSid = streamSid;
   sessionStore.updateSession(callId, session);
   logger.info(`✓ Stream attached. WebSocket state: ${telnyxWs.readyState}`);
 }
@@ -157,17 +167,10 @@ function forwardAudioToOpenAI(callId, audioBuffer) {
   const session = sessionStore.getSession(callId);
   
   if (!session) {
-    logger.error(`❌ Cannot forward audio - No session for: ${callId}`);
     return;
   }
   
-  if (!session.ws) {
-    logger.error(`❌ Cannot forward audio - No OpenAI ws in session`);
-    return;
-  }
-  
-  if (session.ws.readyState !== 1) {
-    logger.error(`❌ Cannot forward audio - OpenAI ws not ready. State: ${session.ws.readyState}`);
+  if (!session.ws || session.ws.readyState !== 1) {
     return;
   }
   
