@@ -80,16 +80,15 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Request PCM16 format at 24kHz to match OpenAI
+    // CRITICAL FIX: Request PCMU (G.711 µ-law) @ 8kHz to match OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
       enable_dialogflow: false,
       media_format: {
-        codec: 'RAW',
-        sample_rate: 24000,
-        channels: 1,
-        bit_depth: 16
+        codec: 'PCMU',  // G.711 µ-law encoding
+        sample_rate: 8000,  // Standard telephony rate
+        channels: 1
       }
     };
     
@@ -106,7 +105,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with RAW PCM @ 24kHz');
+    logger.info('✓ Streaming started with PCMU @ 8kHz');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
