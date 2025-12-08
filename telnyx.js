@@ -87,10 +87,12 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Use both_tracks so we can send audio back
+    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
+      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
+      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -112,7 +114,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with PCMU @ 8kHz (both_tracks)');
+    logger.info('✓ Streaming started with PCMU @ 8kHz (bidirectional RTP mode)');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -145,3 +147,4 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
+
