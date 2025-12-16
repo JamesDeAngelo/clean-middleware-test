@@ -2,56 +2,73 @@ const logger = require('./logger');
 
 const sessions = new Map();
 
-function createSession(callId, openAIWebSocket) {
+function createSession(callId, ws) {
   const session = {
-    callId,
-    ws: openAIWebSocket,
+    ws,
     streamConnection: null,
-    createdAt: new Date()
+    streamSid: null,
+    callControlId: null,
+    callStartTime: new Date().toISOString(),
+    leadData: {
+      name: null,
+      phoneNumber: null,
+      dateOfAccident: null,
+      locationOfAccident: null,
+      typeOfTruck: null,
+      injuriesSustained: null,
+      policeReportFiled: null,
+      callTimestamp: new Date().toISOString(),
+      rawTranscript: []
+    }
   };
   
   sessions.set(callId, session);
-  logger.info(`Session created for call: ${callId}`);
-  
+  logger.info(`Session created: ${callId}`);
   return session;
 }
 
 function getSession(callId) {
-  return sessions.get(callId) || null;
+  return sessions.get(callId);
 }
 
 function updateSession(callId, updates) {
   const session = sessions.get(callId);
-  
-  if (!session) {
-    logger.error(`Cannot update: Session not found for call ${callId}`);
-    return null;
+  if (session) {
+    Object.assign(session, updates);
+    sessions.set(callId, session);
   }
-  
-  const updatedSession = { ...session, ...updates };
-  sessions.set(callId, updatedSession);
-  
-  return updatedSession;
+  return session;
+}
+
+function updateLeadData(callId, field, value) {
+  const session = sessions.get(callId);
+  if (session && session.leadData) {
+    session.leadData[field] = value;
+    sessions.set(callId, session);
+    logger.info(`Updated ${field}: ${value}`);
+  }
+}
+
+function addTranscriptEntry(callId, speaker, text) {
+  const session = sessions.get(callId);
+  if (session && session.leadData) {
+    const timestamp = new Date().toISOString();
+    const entry = `[${timestamp}] ${speaker}: ${text}`;
+    session.leadData.rawTranscript.push(entry);
+    sessions.set(callId, session);
+  }
 }
 
 function deleteSession(callId) {
-  const deleted = sessions.delete(callId);
-  
-  if (deleted) {
-    logger.info(`Session deleted for call: ${callId}`);
-  }
-  
-  return deleted;
-}
-
-function getAllSessions() {
-  return Array.from(sessions.values());
+  sessions.delete(callId);
+  logger.info(`Session deleted: ${callId}`);
 }
 
 module.exports = {
   createSession,
   getSession,
   updateSession,
-  deleteSession,
-  getAllSessions
+  updateLeadData,
+  addTranscriptEntry,
+  deleteSession
 };

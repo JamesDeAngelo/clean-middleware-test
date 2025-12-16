@@ -1,6 +1,7 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
+const { saveLeadToAirtable } = require('./airtable');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -53,6 +54,12 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
+  // Store caller's phone number if available
+  const callerNumber = payload.from;
+  if (callerNumber) {
+    logger.info(`Caller number: ${callerNumber}`);
+  }
+  
   try {
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
@@ -75,24 +82,29 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
-    // Connect to OpenAI first and store callControlId in session
+    // Connect to OpenAI first
     await connectToOpenAI(callControlId);
     
-    // Store callControlId in the session so we can use it later
+    // Store caller info in session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
+      
+      // Store caller's phone number if available
+      if (payload.from) {
+        sessionStore.updateLeadData(callControlId, 'phoneNumber', payload.from);
+      }
+      
       sessionStore.updateSession(callControlId, session);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
-      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
+      stream_bidirectional_mode: 'rtp',
+      stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -125,6 +137,8 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
+  await saveSessionToAirtable(callControlId);
+  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
@@ -136,6 +150,8 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
+  await saveSessionToAirtable(callControlId);
+  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
@@ -146,6 +162,30 @@ async function handleCallHangup(callControlId) {
   logger.info('✓ Call ended');
 }
 
-module.exports = { handleWebhook };
+async function saveSessionToAirtable(callControlId) {
+  const session = sessionStore.getSession(callControlId);
+  
+  if (!session?.leadData) {
+    logger.info('No lead data to save');
+    return;
+  }
+  
+  try {
+    // Combine transcript array into single string
+    const rawTranscript = session.leadData.rawTranscript.join('\n');
+    
+    const leadDataToSave = {
+      ...session.leadData,
+      rawTranscript
+    };
+    
+    logger.info('💾 Saving call data to Airtable...');
+    await saveLeadToAirtable(leadDataToSave);
+    logger.info('✓ Data saved to Airtable successfully');
+  } catch (error) {
+    logger.error(`Failed to save to Airtable: ${error.message}`);
+  }
+}
 
+module.exports = { handleWebhook };
 
