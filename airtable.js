@@ -11,9 +11,8 @@ async function saveLeadToAirtable(leadData, retryCount = 0) {
   try {
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
     
-    // Build fields object, ONLY including non-empty values
+    // Build fields object - EXCLUDE Call Timestamp since it's computed
     const fields = {
-      "Call Timestamp": leadData.callTimestamp || new Date().toISOString(),
       "Raw Transcript": leadData.rawTranscript || ""
     };
     

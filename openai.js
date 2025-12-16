@@ -90,7 +90,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 700
+        silence_duration_ms: 1200  // Increased from 700ms to 1200ms - gives more time before interrupting
       },
       temperature: 0.9,
       max_response_output_tokens: 2048
@@ -136,4 +136,3 @@ module.exports = {
   sendTextToOpenAI,
   sendAudioToOpenAI
 };
-
