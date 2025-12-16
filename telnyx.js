@@ -1,7 +1,6 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
-const { createLead } = require('./airtable');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -79,19 +78,10 @@ async function handleCallAnswered(callControlId, payload) {
     // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
     
-    // Store callControlId and caller info in the session
+    // Store callControlId in the session so we can use it later
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
-      session.callerNumber = payload.from;
-      session.calledNumber = payload.to;
-      session.callStartTime = new Date().toISOString();
-      sessionStore.updateSession(callControlId, session);
-      
-      // Initialize lead data with phone number
-      session.leadData = {
-        phone: payload.from
-      };
       sessionStore.updateSession(callControlId, session);
     }
     
@@ -101,8 +91,8 @@ async function handleCallAnswered(callControlId, payload) {
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
+      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
+      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -135,8 +125,6 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  await saveLeadToAirtable(callControlId);
-  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
@@ -148,8 +136,6 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
-  await saveLeadToAirtable(callControlId);
-  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
@@ -160,37 +146,6 @@ async function handleCallHangup(callControlId) {
   logger.info('✓ Call ended');
 }
 
-async function saveLeadToAirtable(callControlId) {
-  const session = sessionStore.getSession(callControlId);
-  
-  if (!session || !session.leadData) {
-    logger.info('No lead data to save');
-    return;
-  }
-  
-  try {
-    // Compile full transcript
-    const fullTranscript = session.transcript
-      ?.map(t => `[${new Date(t.timestamp).toLocaleTimeString()}] ${t.speaker}: ${t.message}`)
-      .join('\n') || '';
-    
-    // Add call metadata
-    const leadData = {
-      ...session.leadData,
-      notes: fullTranscript,
-      callerNumber: session.callerNumber,
-      calledNumber: session.calledNumber,
-      callStartTime: session.callStartTime,
-      callEndTime: new Date().toISOString()
-    };
-    
-    // Create lead in Airtable
-    await createLead(leadData);
-    logger.info('✅ Lead successfully saved to Airtable');
-  } catch (error) {
-    logger.error(`❌ Failed to save lead: ${error.message}`);
-  }
-}
-
 module.exports = { handleWebhook };
+
 
