@@ -9,9 +9,11 @@ function createSession(callId, ws) {
     streamSid: null,
     callControlId: null,
     callStartTime: new Date().toISOString(),
+    lastResponseTime: null, // Track when AI last spoke
+    saveTimer: null, // Timer for delayed save
     leadData: {
       name: null,
-      phoneNumber: null,
+      phoneNumber: null, // Will be set from Telnyx caller ID
       dateOfAccident: null,
       locationOfAccident: null,
       typeOfTruck: null,
@@ -45,7 +47,7 @@ function updateLeadData(callId, field, value) {
   if (session && session.leadData) {
     session.leadData[field] = value;
     sessions.set(callId, session);
-    logger.info(`Updated ${field}: ${value}`);
+    logger.info(`✏️  Updated ${field}: ${value}`);
   }
 }
 
@@ -59,7 +61,22 @@ function addTranscriptEntry(callId, speaker, text) {
   }
 }
 
+function updateLastResponseTime(callId) {
+  const session = sessions.get(callId);
+  if (session) {
+    session.lastResponseTime = Date.now();
+    sessions.set(callId, session);
+  }
+}
+
 function deleteSession(callId) {
+  const session = sessions.get(callId);
+  
+  // Clear any pending save timer
+  if (session?.saveTimer) {
+    clearTimeout(session.saveTimer);
+  }
+  
   sessions.delete(callId);
   logger.info(`Session deleted: ${callId}`);
 }
@@ -70,5 +87,6 @@ module.exports = {
   updateSession,
   updateLeadData,
   addTranscriptEntry,
+  updateLastResponseTime,
   deleteSession
 };

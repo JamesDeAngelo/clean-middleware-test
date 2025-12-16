@@ -9,8 +9,9 @@ const {
 } = require('./openai');
 
 const OPENAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
+const SAVE_DELAY_MS = 2000; // Save 2 seconds after last AI response
 
-// Simple keyword extraction
+// Simple keyword extraction from speech
 function extractDataFromTranscript(transcript, field) {
   const text = transcript.toLowerCase();
   
@@ -19,27 +20,22 @@ function extractDataFromTranscript(transcript, field) {
     const namePatterns = [
       /my name is ([a-z]+(?:\s[a-z]+)?)/i,
       /i'm ([a-z]+(?:\s[a-z]+)?)/i,
-      /this is ([a-z]+(?:\s[a-z]+)?)/i
+      /this is ([a-z]+(?:\s[a-z]+)?)/i,
+      /call me ([a-z]+(?:\s[a-z]+)?)/i
     ];
     for (const pattern of namePatterns) {
       const match = transcript.match(pattern);
-      if (match) return match[1];
+      if (match) return match[1].trim();
     }
   }
   
-  // Phone number extraction
-  if (field === 'phoneNumber') {
-    const phonePattern = /(\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)\s?\d{3}[-.\s]?\d{4})/;
-    const match = transcript.match(phonePattern);
-    if (match) return match[1];
-  }
-  
-  // Date extraction (simple)
+  // Date extraction
   if (field === 'dateOfAccident') {
     const datePatterns = [
       /(\d{1,2}\/\d{1,2}\/\d{2,4})/,
       /(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}/i,
-      /(last|this)\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i
+      /(last|this)\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+      /(\d{1,2})\s+(days?|weeks?|months?|years?)\s+ago/i
     ];
     for (const pattern of datePatterns) {
       const match = transcript.match(pattern);
@@ -47,22 +43,93 @@ function extractDataFromTranscript(transcript, field) {
     }
   }
   
-  // Truck type
-  if (field === 'typeOfTruck') {
-    if (text.includes('semi') || text.includes('tractor')) return 'Semi-truck';
-    if (text.includes('delivery')) return 'Delivery truck';
-    if (text.includes('pickup')) return 'Pickup truck';
-    if (text.includes('dump')) return 'Dump truck';
-    if (text.includes('fedex') || text.includes('ups')) return 'Delivery truck';
+  // Location extraction
+  if (field === 'locationOfAccident') {
+    const locationPatterns = [
+      /on\s+([a-z0-9\s]+(?:street|avenue|road|highway|boulevard|drive|lane|way))/i,
+      /at\s+([a-z0-9\s]+(?:street|avenue|road|highway|boulevard|drive|lane|way))/i,
+      /in\s+([a-z\s]+,?\s*[a-z]+)/i // "in Los Angeles" or "in downtown"
+    ];
+    for (const pattern of locationPatterns) {
+      const match = transcript.match(pattern);
+      if (match) return match[1].trim();
+    }
   }
   
-  // Police report
+  // Truck type extraction
+  if (field === 'typeOfTruck') {
+    if (text.includes('semi') || text.includes('tractor') || text.includes('18 wheeler')) return 'Semi-truck';
+    if (text.includes('delivery') || text.includes('fedex') || text.includes('ups') || text.includes('amazon')) return 'Delivery truck';
+    if (text.includes('pickup')) return 'Pickup truck';
+    if (text.includes('dump')) return 'Dump truck';
+    if (text.includes('box truck') || text.includes('moving truck')) return 'Box truck';
+  }
+  
+  // Injuries extraction - capture the whole response
+  if (field === 'injuriesSustained') {
+    if (text.includes('hurt') || text.includes('pain') || text.includes('injur') || 
+        text.includes('broke') || text.includes('fracture') || text.includes('whiplash')) {
+      return transcript; // Return full text for context
+    }
+  }
+  
+  // Police report - convert to simple text
   if (field === 'policeReportFiled') {
-    if (text.includes('yes') || text.includes('they came') || text.includes('police came')) return 'Yes';
-    if (text.includes('no') || text.includes('didn\'t come') || text.includes('no police')) return 'No';
+    if (text.includes('yes') || text.includes('they came') || text.includes('police came') || 
+        text.includes('filed') || text.includes('report')) return 'Yes';
+    if (text.includes('no') || text.includes('didn\'t') || text.includes('not')) return 'No';
   }
   
   return null;
+}
+
+async function scheduleSaveToAirtable(callId) {
+  const session = sessionStore.getSession(callId);
+  if (!session) return;
+  
+  // Clear any existing timer
+  if (session.saveTimer) {
+    clearTimeout(session.saveTimer);
+  }
+  
+  // Schedule save for 2 seconds from now
+  session.saveTimer = setTimeout(async () => {
+    logger.info(`⏰ Save timer triggered for call: ${callId}`);
+    await saveSessionToAirtable(callId);
+  }, SAVE_DELAY_MS);
+  
+  sessionStore.updateSession(callId, session);
+}
+
+async function saveSessionToAirtable(callId) {
+  const session = sessionStore.getSession(callId);
+  
+  if (!session?.leadData) {
+    logger.info('No lead data to save');
+    return;
+  }
+  
+  try {
+    // Combine transcript array into single string
+    const rawTranscript = session.leadData.rawTranscript.join('\n');
+    
+    const leadDataToSave = {
+      ...session.leadData,
+      rawTranscript
+    };
+    
+    logger.info('💾 Saving call data to Airtable...');
+    await saveLeadToAirtable(leadDataToSave);
+    logger.info('✅ Call data saved to Airtable successfully');
+    
+    // Mark as saved so we don't save again
+    session.savedToAirtable = true;
+    sessionStore.updateSession(callId, session);
+    
+  } catch (error) {
+    logger.error(`❌ Failed to save to Airtable: ${error.message}`);
+    // Error already logged with retry attempts in airtable.js
+  }
 }
 
 async function connectToOpenAI(callId) {
@@ -94,7 +161,7 @@ async function connectToOpenAI(callId) {
         try {
           const msg = JSON.parse(data.toString());
           
-          // Handle audio from OpenAI
+          // Handle audio from OpenAI - send back to Telnyx
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
             
@@ -119,10 +186,20 @@ async function connectToOpenAI(callId) {
             }
           }
 
-          // Capture AI responses
+          // Capture AI responses and update last response time
           if (msg.type === "response.audio_transcript.delta") {
             logger.info(`🤖 AI: "${msg.delta}"`);
             sessionStore.addTranscriptEntry(callId, 'AI', msg.delta);
+          }
+
+          // When AI finishes speaking, update timer
+          if (msg.type === "response.done") {
+            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
+            audioChunksSent = 0;
+            
+            // Update last response time and schedule save
+            sessionStore.updateLastResponseTime(callId);
+            scheduleSaveToAirtable(callId);
           }
 
           // Capture user speech transcripts and extract data
@@ -140,16 +217,16 @@ async function connectToOpenAI(callId) {
                 sessionStore.updateLeadData(callId, 'name', name);
               }
               
-              // Extract phone
-              const phone = extractDataFromTranscript(userText, 'phoneNumber');
-              if (phone && !session.leadData.phoneNumber) {
-                sessionStore.updateLeadData(callId, 'phoneNumber', phone);
-              }
-              
               // Extract date
               const date = extractDataFromTranscript(userText, 'dateOfAccident');
               if (date && !session.leadData.dateOfAccident) {
                 sessionStore.updateLeadData(callId, 'dateOfAccident', date);
+              }
+              
+              // Extract location
+              const location = extractDataFromTranscript(userText, 'locationOfAccident');
+              if (location && !session.leadData.locationOfAccident) {
+                sessionStore.updateLeadData(callId, 'locationOfAccident', location);
               }
               
               // Extract truck type
@@ -158,26 +235,18 @@ async function connectToOpenAI(callId) {
                 sessionStore.updateLeadData(callId, 'typeOfTruck', truckType);
               }
               
+              // Extract injuries - append if already exists
+              const injuries = extractDataFromTranscript(userText, 'injuriesSustained');
+              if (injuries) {
+                const existing = session.leadData.injuriesSustained || '';
+                const combined = existing ? `${existing}; ${injuries}` : injuries;
+                sessionStore.updateLeadData(callId, 'injuriesSustained', combined);
+              }
+              
               // Extract police report
               const policeReport = extractDataFromTranscript(userText, 'policeReportFiled');
               if (policeReport && !session.leadData.policeReportFiled) {
                 sessionStore.updateLeadData(callId, 'policeReportFiled', policeReport);
-              }
-              
-              // Capture injuries and location as freeform
-              if (!session.leadData.injuriesSustained && 
-                  (userText.toLowerCase().includes('hurt') || 
-                   userText.toLowerCase().includes('pain') ||
-                   userText.toLowerCase().includes('injur'))) {
-                sessionStore.updateLeadData(callId, 'injuriesSustained', userText);
-              }
-              
-              if (!session.leadData.locationOfAccident && 
-                  (userText.toLowerCase().includes('street') || 
-                   userText.toLowerCase().includes('avenue') ||
-                   userText.toLowerCase().includes('road') ||
-                   userText.toLowerCase().includes('highway'))) {
-                sessionStore.updateLeadData(callId, 'locationOfAccident', userText);
               }
             }
           }
@@ -188,11 +257,6 @@ async function connectToOpenAI(callId) {
 
           if (msg.type === "input_audio_buffer.speech_stopped") {
             logger.info('🔇 User stopped');
-          }
-
-          if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
-            audioChunksSent = 0;
           }
 
           if (msg.type === "error") {
@@ -221,27 +285,9 @@ async function connectToOpenAI(callId) {
       });
 
       ws.on('close', async () => {
-        logger.info('OpenAI closed');
+        logger.info('OpenAI connection closed');
         
-        // Save to Airtable when call ends
-        const session = sessionStore.getSession(callId);
-        if (session?.leadData) {
-          try {
-            // Combine transcript array into single string
-            const rawTranscript = session.leadData.rawTranscript.join('\n');
-            
-            const leadDataToSave = {
-              ...session.leadData,
-              rawTranscript
-            };
-            
-            logger.info('💾 Saving call data to Airtable...');
-            await saveLeadToAirtable(leadDataToSave);
-            logger.info('✓ Data saved to Airtable');
-          } catch (error) {
-            logger.error(`Failed to save to Airtable: ${error.message}`);
-          }
-        }
+        // Don't save here - the timer or hangup handler will do it
       });
 
     } catch (error) {
@@ -295,5 +341,6 @@ function forwardAudioToOpenAI(callId, audioBuffer) {
 module.exports = {
   connectToOpenAI,
   attachTelnyxStream,
-  forwardAudioToOpenAI
+  forwardAudioToOpenAI,
+  saveSessionToAirtable // Export for use in telnyx.js
 };

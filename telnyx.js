@@ -1,7 +1,6 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
-const { connectToOpenAI } = require('./websocket');
-const { saveLeadToAirtable } = require('./airtable');
+const { connectToOpenAI, saveSessionToAirtable } = require('./websocket');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -14,7 +13,7 @@ async function handleWebhook(req, res) {
     const payload = req.body?.data?.payload || {};
     const callControlId = payload?.call_control_id;
     
-    logger.info(`Event: ${eventType}`);
+    logger.info(`📞 Event: ${eventType}`);
     
     if (!callControlId && eventType !== 'call.hangup') {
       return res.status(400).send('Missing call_control_id');
@@ -54,10 +53,10 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  // Store caller's phone number if available
+  // Log caller's phone number
   const callerNumber = payload.from;
   if (callerNumber) {
-    logger.info(`Caller number: ${callerNumber}`);
+    logger.info(`📞 Incoming call from: ${callerNumber}`);
   }
   
   try {
@@ -90,9 +89,10 @@ async function handleCallAnswered(callControlId, payload) {
     if (session) {
       session.callControlId = callControlId;
       
-      // Store caller's phone number if available
+      // CRITICAL: Store caller's phone number from Telnyx (guaranteed accurate)
       if (payload.from) {
         sessionStore.updateLeadData(callControlId, 'phoneNumber', payload.from);
+        logger.info(`📱 Phone number saved: ${payload.from}`);
       }
       
       sessionStore.updateSession(callControlId, session);
@@ -137,10 +137,15 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  await saveSessionToAirtable(callControlId);
+  logger.info('🛑 Streaming stopped');
   
+  // Save to Airtable if not already saved by timer
   const session = sessionStore.getSession(callControlId);
+  if (session && !session.savedToAirtable) {
+    await saveSessionToAirtable(callControlId);
+  }
   
+  // Cleanup
   if (session?.ws?.readyState === 1) {
     session.ws.close();
   }
@@ -150,42 +155,21 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
-  await saveSessionToAirtable(callControlId);
+  logger.info('📴 Call hangup');
   
+  // Save to Airtable if not already saved by timer
   const session = sessionStore.getSession(callControlId);
+  if (session && !session.savedToAirtable) {
+    await saveSessionToAirtable(callControlId);
+  }
   
+  // Cleanup
   if (session?.ws?.readyState === 1) {
     session.ws.close();
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info('✓ Call ended');
-}
-
-async function saveSessionToAirtable(callControlId) {
-  const session = sessionStore.getSession(callControlId);
-  
-  if (!session?.leadData) {
-    logger.info('No lead data to save');
-    return;
-  }
-  
-  try {
-    // Combine transcript array into single string
-    const rawTranscript = session.leadData.rawTranscript.join('\n');
-    
-    const leadDataToSave = {
-      ...session.leadData,
-      rawTranscript
-    };
-    
-    logger.info('💾 Saving call data to Airtable...');
-    await saveLeadToAirtable(leadDataToSave);
-    logger.info('✓ Data saved to Airtable successfully');
-  } catch (error) {
-    logger.error(`Failed to save to Airtable: ${error.message}`);
-  }
+  logger.info('✓ Call ended and cleaned up');
 }
 
 module.exports = { handleWebhook };
-
