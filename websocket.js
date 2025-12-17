@@ -11,7 +11,7 @@ const { saveToAirtable } = require('./airtable');
 
 const OPENAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
 
-async function connectToOpenAI(callId) {
+async function connectToOpenAI(callId, phoneNumber = '') {
   return new Promise(async (resolve, reject) => {
     try {
       const ws = new WebSocket(OPENAI_URL, {
@@ -37,6 +37,13 @@ async function connectToOpenAI(callId) {
         sessionStore.createSession(callId, ws);
         const session = sessionStore.getSession(callId);
         session.dataExtractor = new DataExtractor();
+        
+        // Set phone number immediately if we have it
+        if (phoneNumber) {
+          session.dataExtractor.setPhoneNumber(phoneNumber);
+          logger.info(`📞 Phone number set in DataExtractor: ${phoneNumber}`);
+        }
+        
         sessionStore.updateSession(callId, session);
         
         resolve(ws);
@@ -102,7 +109,12 @@ async function connectToOpenAI(callId) {
             const session = sessionStore.getSession(callId);
             if (session?.dataExtractor) {
               // Extract data from this message
-              session.dataExtractor.updateFromTranscript(msg.transcript);
+              session.dataExtractor.updateFromTranscript(msg.transcript, '');
+              
+              // Log current data state for debugging
+              const currentData = session.dataExtractor.getData();
+              logger.info(`📊 Current extracted data: ${JSON.stringify(currentData)}`);
+              
               sessionStore.updateSession(callId, session);
             }
           }
@@ -124,16 +136,25 @@ async function connectToOpenAI(callId) {
               const session = sessionStore.getSession(callId);
               if (session?.dataExtractor && !session.dataSaved) {
                 const leadData = session.dataExtractor.getData();
-                if (session.dataExtractor.hasMinimumData()) {
+                
+                // Log what we're about to check
+                logger.info(`💾 Checking data for save: ${JSON.stringify(leadData)}`);
+                logger.info(`💾 Has minimum data? ${session.dataExtractor.hasMinimumData()}`);
+                
+                // Save if we have ANY data with phone number
+                if (session.dataExtractor.hasMinimumData() || leadData.phoneNumber) {
                   logger.info('💾 Saving to Airtable (2 seconds after last AI response)');
                   saveToAirtable(leadData).then(result => {
                     if (result.success) {
+                      logger.info(`✅ Successfully saved! Record ID: ${result.recordId}`);
                       session.dataSaved = true;
                       sessionStore.updateSession(callId, session);
+                    } else {
+                      logger.error(`❌ Save failed: ${result.error}`);
                     }
                   });
                 } else {
-                  logger.info('⏭️ Skipping save - insufficient data collected yet');
+                  logger.info(`⏭️ Skipping save - missing phone number. Data: ${JSON.stringify(leadData)}`);
                 }
               }
             }, 2000);
@@ -171,9 +192,21 @@ async function connectToOpenAI(callId) {
         const session = sessionStore.getSession(callId);
         if (session?.dataExtractor && !session.dataSaved) {
           const leadData = session.dataExtractor.getData();
-          if (session.dataExtractor.hasMinimumData()) {
+          
+          logger.info(`💾 Final save attempt on close. Data: ${JSON.stringify(leadData)}`);
+          
+          // Save if we have ANY data with phone number
+          if (leadData.phoneNumber) {
             logger.info('💾 Final save on connection close');
-            saveToAirtable(leadData);
+            saveToAirtable(leadData).then(result => {
+              if (result.success) {
+                logger.info(`✅ Final save successful! Record ID: ${result.recordId}`);
+              } else {
+                logger.error(`❌ Final save failed: ${result.error}`);
+              }
+            });
+          } else {
+            logger.info('⏭️ No final save - no phone number collected');
           }
         }
         

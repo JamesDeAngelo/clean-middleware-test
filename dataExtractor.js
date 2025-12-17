@@ -22,18 +22,19 @@ class DataExtractor {
    */
   updateFromTranscript(userMessage, contextHint = '') {
     const message = userMessage.toLowerCase();
+    const originalMessage = userMessage; // Keep original case for extraction
     
     // Extract name (look for patterns like "my name is X" or "I'm X")
     if (!this.data.name) {
-      const nameMatch = message.match(/(?:my name is|i'm|i am|this is)\s+([a-z]+(?:\s+[a-z]+)?)/i);
+      const nameMatch = message.match(/(?:my name is|i'm|i am|this is|name's)\s+([a-z]+(?:\s+[a-z]+)?)/i);
       if (nameMatch) {
         this.data.name = this.toTitleCase(nameMatch[1]);
         logger.info(`📝 Extracted name: ${this.data.name}`);
       }
     }
 
-    // Extract date patterns (e.g., "yesterday", "last week", "December 5th", "3 months ago")
-    if (!this.data.dateOfAccident && (contextHint.includes('when') || message.includes('ago') || message.includes('last'))) {
+    // Extract date patterns - MORE FLEXIBLE
+    if (!this.data.dateOfAccident) {
       const dateStr = this.extractDate(message);
       if (dateStr) {
         this.data.dateOfAccident = dateStr;
@@ -41,21 +42,57 @@ class DataExtractor {
       }
     }
 
-    // Extract location
-    if (!this.data.locationOfAccident && (contextHint.includes('where') || message.includes('on ') || message.includes('at '))) {
-      const locationMatch = message.match(/(?:on|at|near)\s+([a-z0-9\s,]+?)(?:\.|,|$)/i);
-      if (locationMatch) {
-        this.data.locationOfAccident = this.toTitleCase(locationMatch[1].trim());
+    // Extract location - MORE FLEXIBLE
+    if (!this.data.locationOfAccident) {
+      // Try multiple patterns
+      let location = null;
+      
+      // Pattern 1: "Chicago, Illinois, Mitchell Drive" style
+      const cityStateStreet = originalMessage.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+)(?:,\s*(.+))?/);
+      if (cityStateStreet) {
+        location = cityStateStreet[0].trim();
+      }
+      
+      // Pattern 2: "on [street]" or "at [place]"
+      if (!location) {
+        const onAtMatch = message.match(/(?:on|at|near)\s+([a-z0-9\s,]+?)(?:\.|,|and|$)/i);
+        if (onAtMatch) {
+          location = onAtMatch[1].trim();
+        }
+      }
+      
+      // Pattern 3: Just any street/highway mention
+      if (!location && (message.includes('drive') || message.includes('street') || message.includes('highway') || message.includes('road'))) {
+        // Extract the whole phrase that seems like an address
+        const addressMatch = originalMessage.match(/([A-Z][a-zA-Z\s,]+(?:Drive|Street|Highway|Road|Avenue|Boulevard)[A-Za-z\s,]*)/i);
+        if (addressMatch) {
+          location = addressMatch[1].trim();
+        }
+      }
+      
+      if (location) {
+        this.data.locationOfAccident = location;
         logger.info(`📍 Extracted location: ${this.data.locationOfAccident}`);
       }
     }
 
     // Extract truck type
-    if (!this.data.typeOfTruck && (message.includes('truck') || message.includes('semi') || message.includes('18'))) {
-      const types = ['semi', '18 wheeler', 'tractor trailer', 'big rig', 'delivery truck', 'box truck', 'pickup'];
+    if (!this.data.typeOfTruck) {
+      const types = [
+        { pattern: /semi[- ]?truck/i, name: 'Semi Truck' },
+        { pattern: /18[- ]?wheeler/i, name: '18 Wheeler' },
+        { pattern: /tractor[- ]?trailer/i, name: 'Tractor Trailer' },
+        { pattern: /big rig/i, name: 'Big Rig' },
+        { pattern: /delivery truck/i, name: 'Delivery Truck' },
+        { pattern: /box truck/i, name: 'Box Truck' },
+        { pattern: /pickup truck/i, name: 'Pickup Truck' },
+        { pattern: /dump truck/i, name: 'Dump Truck' },
+        { pattern: /\bsemi\b/i, name: 'Semi' }
+      ];
+      
       for (const type of types) {
-        if (message.includes(type)) {
-          this.data.typeOfTruck = this.toTitleCase(type);
+        if (type.pattern.test(message)) {
+          this.data.typeOfTruck = type.name;
           logger.info(`🚛 Extracted truck type: ${this.data.typeOfTruck}`);
           break;
         }
@@ -63,11 +100,15 @@ class DataExtractor {
     }
 
     // Extract injuries (accumulate multiple mentions)
-    if (contextHint.includes('injur') || message.includes('hurt') || message.includes('pain')) {
+    if (message.includes('hurt') || message.includes('pain') || message.includes('injur') || 
+        message.includes('broke') || message.includes('fracture')) {
       const injuries = this.extractInjuries(message);
       if (injuries) {
         if (this.data.injuriesSustained) {
-          this.data.injuriesSustained += '; ' + injuries;
+          // Don't duplicate
+          if (!this.data.injuriesSustained.toLowerCase().includes(injuries.toLowerCase())) {
+            this.data.injuriesSustained += '; ' + injuries;
+          }
         } else {
           this.data.injuriesSustained = injuries;
         }
@@ -76,8 +117,9 @@ class DataExtractor {
     }
 
     // Extract police report status
-    if (!this.data.policeReportFiled && (contextHint.includes('police') || message.includes('police'))) {
-      if (message.includes('yes') || message.includes('came') || message.includes('filed')) {
+    if (!this.data.policeReportFiled) {
+      if (message.includes('yes') || message.includes('came') || message.includes('filed') || 
+          message.includes('they came') || message.includes('police came')) {
         this.data.policeReportFiled = 'Yes';
       } else if (message.includes('no') || message.includes('didn\'t') || message.includes('not')) {
         this.data.policeReportFiled = 'No';
@@ -94,20 +136,30 @@ class DataExtractor {
   extractDate(message) {
     const today = new Date();
     
+    // Check for "today"
     if (message.includes('today')) {
       return this.formatDate(today);
     }
     
+    // Check for "yesterday"
     if (message.includes('yesterday')) {
       const yesterday = new Date(today);
       yesterday.setDate(yesterday.getDate() - 1);
       return this.formatDate(yesterday);
     }
     
+    // Check for "last week"
     if (message.includes('last week')) {
       const lastWeek = new Date(today);
       lastWeek.setDate(lastWeek.getDate() - 7);
       return this.formatDate(lastWeek);
+    }
+    
+    // Check for "last month"
+    if (message.includes('last month')) {
+      const lastMonth = new Date(today);
+      lastMonth.setMonth(lastMonth.getMonth() - 1);
+      return this.formatDate(lastMonth);
     }
     
     // Match patterns like "3 days ago", "2 months ago", "1 year ago"
@@ -149,6 +201,13 @@ class DataExtractor {
         parseInt(day)
       );
       return this.formatDate(date);
+    }
+    
+    // If message is just a date word without context
+    if (message === 'yesterday' || message.trim() === 'yesterday') {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      return this.formatDate(yesterday);
     }
     
     return null;

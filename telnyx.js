@@ -15,6 +15,11 @@ async function handleWebhook(req, res) {
     
     logger.info(`Event: ${eventType}`);
     
+    // LOG THE ENTIRE PAYLOAD for debugging
+    if (eventType === 'call.initiated' || eventType === 'call.answered') {
+      logger.info(`📋 Full payload: ${JSON.stringify(payload, null, 2)}`);
+    }
+    
     if (!callControlId && eventType !== 'call.hangup') {
       return res.status(400).send('Missing call_control_id');
     }
@@ -78,23 +83,20 @@ async function handleCallInitiated(callControlId, payload) {
 async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
-  // Get caller's phone number
-  const callerPhoneNumber = payload?.from || '';
+  // Get caller's phone number - try multiple fields
+  const callerPhoneNumber = payload?.from || payload?.caller_id_number || payload?.call_leg_id || '';
+  logger.info(`📞 Raw payload.from: ${payload?.from}`);
+  logger.info(`📞 Raw payload.caller_id_number: ${payload?.caller_id_number}`);
+  logger.info(`📞 Using phone number: ${callerPhoneNumber}`);
   
   try {
     // Connect to OpenAI first and store callControlId in session
-    await connectToOpenAI(callControlId);
+    await connectToOpenAI(callControlId, callerPhoneNumber);
     
-    // Store callControlId and phone number in the session
+    // Store callControlId in the session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
-      
-      // Set phone number in data extractor
-      if (session.dataExtractor && callerPhoneNumber) {
-        session.dataExtractor.setPhoneNumber(callerPhoneNumber);
-      }
-      
       sessionStore.updateSession(callControlId, session);
     }
     
