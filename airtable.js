@@ -14,13 +14,13 @@ const RETRY_DELAY = 1000; // 1 second
  */
 function extractCallData(transcript, callerPhone) {
   const data = {
-    'Name (single line text)': null,
-    'Phone Number (Phone Number)': callerPhone || null,
-    'Date of Accident (date)': null,
-    'Location of Accident (single line text)': null,
-    'Type of Truck (single line text)': null,
-    'Injuries Sustained (long text)': null,
-    'Police Report Filed (single line text)': null
+    'Name': null,
+    'Phone Number': callerPhone || null,
+    'Date of Accident': null,
+    'Location of Accident': null,
+    'Type of Truck': null,
+    'Injuries Sustained': null,
+    'Police Report Filed': null
   };
 
   if (!transcript || transcript.length === 0) {
@@ -45,7 +45,7 @@ function extractCallData(transcript, callerPhone) {
     if (match) {
       const nameMatch = match.content.match(pattern);
       if (nameMatch && nameMatch[1]) {
-        data['Name (single line text)'] = nameMatch[1].trim();
+        data['Name'] = nameMatch[1].trim();
         break;
       }
     }
@@ -62,7 +62,7 @@ function extractCallData(transcript, callerPhone) {
   for (const pattern of datePatterns) {
     const match = fullText.match(pattern);
     if (match) {
-      data['Date of Accident (date)'] = match[1];
+      data['Date of Accident'] = match[1];
       break;
     }
   }
@@ -76,28 +76,28 @@ function extractCallData(transcript, callerPhone) {
   for (const pattern of locationPatterns) {
     const match = fullText.match(pattern);
     if (match && match[1]) {
-      data['Location of Accident (single line text)'] = match[1].trim();
+      data['Location of Accident'] = match[1].trim();
       break;
     }
   }
 
   // Extract truck type
   if (/semi|18.?wheeler|tractor.?trailer|big rig/i.test(fullText)) {
-    data['Type of Truck (single line text)'] = 'Semi-truck / 18-wheeler';
+    data['Type of Truck'] = 'Semi-truck / 18-wheeler';
   } else if (/pickup|pick.?up/i.test(fullText)) {
-    data['Type of Truck (single line text)'] = 'Pickup truck';
+    data['Type of Truck'] = 'Pickup truck';
   } else if (/delivery|fedex|ups|amazon/i.test(fullText)) {
-    data['Type of Truck (single line text)'] = 'Delivery truck';
+    data['Type of Truck'] = 'Delivery truck';
   } else if (/dump truck/i.test(fullText)) {
-    data['Type of Truck (single line text)'] = 'Dump truck';
+    data['Type of Truck'] = 'Dump truck';
   } else if (/truck/i.test(fullText)) {
-    data['Type of Truck (single line text)'] = 'Truck (type unspecified)';
+    data['Type of Truck'] = 'Truck (type unspecified)';
   }
 
   // Extract injuries - collect all injury mentions
   const injuryKeywords = [
     'broken', 'fractured', 'injury', 'injured', 'hurt', 'pain', 'bleeding',
-    'concussion', 'whiplash', 'bruise', 'cut', 'sprain', 'torn', 'damaged'
+    'concussion', 'whiplash', 'bruise', 'cut', 'sprain', 'torn', 'damaged', 'broke'
   ];
   
   const injuryMentions = [];
@@ -111,14 +111,14 @@ function extractCallData(transcript, callerPhone) {
   }
   
   if (injuryMentions.length > 0) {
-    data['Injuries Sustained (long text)'] = injuryMentions.join(' | ');
+    data['Injuries Sustained'] = injuryMentions.join(' | ');
   }
 
   // Police report
   if (/police.*(?:came|arrived|report|filed)/i.test(fullText) || /filed.*police.*report/i.test(fullText)) {
-    data['Police Report Filed (single line text)'] = 'Yes';
+    data['Police Report Filed'] = 'Yes';
   } else if (/no.*police|didn't.*call.*police|police.*didn't.*come/i.test(fullText)) {
-    data['Police Report Filed (single line text)'] = 'No';
+    data['Police Report Filed'] = 'No';
   }
 
   return data;
@@ -138,6 +138,8 @@ async function saveToAirtable(callData, retryCount = 0) {
         fields[key] = value;
       }
     }
+
+    logger.info(`📋 Sending to Airtable: ${JSON.stringify(fields, null, 2)}`);
 
     const response = await axios.post(
       AIRTABLE_URL,
