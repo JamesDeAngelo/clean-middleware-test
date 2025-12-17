@@ -53,9 +53,9 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  // CAPTURE CALLER PHONE NUMBER
-  const callerPhone = payload.from || null;
-  logger.info(`📱 Caller phone: ${callerPhone}`);
+  // Capture caller's phone number from Telnyx
+  const callerPhoneNumber = payload?.from || '';
+  logger.info(`📞 Caller ID: ${callerPhoneNumber}`);
   
   try {
     await axios.post(
@@ -78,20 +78,24 @@ async function handleCallInitiated(callControlId, payload) {
 async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
-  // CAPTURE CALLER PHONE NUMBER (in case it wasn't in call.initiated)
-  const callerPhone = payload.from || null;
+  // Get caller's phone number
+  const callerPhoneNumber = payload?.from || '';
   
   try {
     // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
     
-    // Store callControlId AND callerPhone in the session
+    // Store callControlId and phone number in the session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
-      session.callerPhone = callerPhone;
+      
+      // Set phone number in data extractor
+      if (session.dataExtractor && callerPhoneNumber) {
+        session.dataExtractor.setPhoneNumber(callerPhoneNumber);
+      }
+      
       sessionStore.updateSession(callControlId, session);
-      logger.info(`✓ Session updated with phone: ${callerPhone}`);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
@@ -100,8 +104,8 @@ async function handleCallAnswered(callControlId, payload) {
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
-      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
+      stream_bidirectional_mode: 'rtp',
+      stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',

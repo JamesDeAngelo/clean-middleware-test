@@ -1,15 +1,15 @@
 const WebSocket = require('ws');
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
-const { processAndSaveCall } = require('./airtable');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
   sendAudioToOpenAI
 } = require('./openai');
+const DataExtractor = require('./dataExtractor');
+const { saveToAirtable } = require('./airtable');
 
 const OPENAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
-const SAVE_DELAY_MS = 2000; // Save 2 seconds after last AI response
 
 async function connectToOpenAI(callId) {
   return new Promise(async (resolve, reject) => {
@@ -22,6 +22,8 @@ async function connectToOpenAI(callId) {
       });
 
       let audioChunksSent = 0;
+      let lastAIResponseTime = null;
+      let saveTimeout = null;
 
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
@@ -31,7 +33,11 @@ async function connectToOpenAI(callId) {
         
         ws.send(JSON.stringify(initPayload));
         
+        // Create session with data extractor
         sessionStore.createSession(callId, ws);
+        const session = sessionStore.getSession(callId);
+        session.dataExtractor = new DataExtractor();
+        sessionStore.updateSession(callId, session);
         
         resolve(ws);
       });
@@ -77,19 +83,8 @@ async function connectToOpenAI(callId) {
             }
           }
 
-          // CAPTURE AI TRANSCRIPT
           if (msg.type === "response.audio_transcript.delta") {
             logger.info(`🤖 AI: "${msg.delta}"`);
-            // We'll capture the full transcript on completion
-          }
-
-          // CAPTURE FULL AI RESPONSE
-          if (msg.type === "response.audio_transcript.done") {
-            const transcript = msg.transcript;
-            if (transcript) {
-              sessionStore.addToTranscript(callId, 'assistant', transcript);
-              logger.info(`🤖 AI (complete): "${transcript}"`);
-            }
           }
 
           if (msg.type === "input_audio_buffer.speech_started") {
@@ -100,23 +95,48 @@ async function connectToOpenAI(callId) {
             logger.info('🔇 User stopped');
           }
 
-          // CAPTURE USER TRANSCRIPT
+          // Extract data from user's message
           if (msg.type === "conversation.item.input_audio_transcription.completed") {
-            const userText = msg.transcript;
-            sessionStore.addToTranscript(callId, 'user', userText);
-            logger.info(`👤 User: "${userText}"`);
+            logger.info(`👤 User: "${msg.transcript}"`);
+            
+            const session = sessionStore.getSession(callId);
+            if (session?.dataExtractor) {
+              // Extract data from this message
+              session.dataExtractor.updateFromTranscript(msg.transcript);
+              sessionStore.updateSession(callId, session);
+            }
           }
 
-          // TRIGGER SAVE 2 SECONDS AFTER LAST AI RESPONSE
           if (msg.type === "response.done") {
             logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
             audioChunksSent = 0;
             
-            // Update last AI response time
-            sessionStore.updateLastAIResponse(callId);
+            // Track last AI response time for save trigger
+            lastAIResponseTime = Date.now();
             
-            // Schedule save (will be rescheduled if another response comes)
-            scheduleAirtableSave(callId);
+            // Clear any existing timeout
+            if (saveTimeout) {
+              clearTimeout(saveTimeout);
+            }
+            
+            // Set new timeout: save 2 seconds after last AI response
+            saveTimeout = setTimeout(() => {
+              const session = sessionStore.getSession(callId);
+              if (session?.dataExtractor && !session.dataSaved) {
+                const leadData = session.dataExtractor.getData();
+                if (session.dataExtractor.hasMinimumData()) {
+                  logger.info('💾 Saving to Airtable (2 seconds after last AI response)');
+                  saveToAirtable(leadData).then(result => {
+                    if (result.success) {
+                      session.dataSaved = true;
+                      sessionStore.updateSession(callId, session);
+                    }
+                  });
+                } else {
+                  logger.info('⏭️ Skipping save - insufficient data collected yet');
+                }
+              }
+            }, 2000);
           }
 
           if (msg.type === "error") {
@@ -146,8 +166,20 @@ async function connectToOpenAI(callId) {
 
       ws.on('close', () => {
         logger.info('OpenAI closed');
-        // Save immediately on close
-        saveCallToAirtable(callId);
+        
+        // Final save attempt on close if not already saved
+        const session = sessionStore.getSession(callId);
+        if (session?.dataExtractor && !session.dataSaved) {
+          const leadData = session.dataExtractor.getData();
+          if (session.dataExtractor.hasMinimumData()) {
+            logger.info('💾 Final save on connection close');
+            saveToAirtable(leadData);
+          }
+        }
+        
+        if (saveTimeout) {
+          clearTimeout(saveTimeout);
+        }
       });
 
     } catch (error) {
@@ -155,61 +187,6 @@ async function connectToOpenAI(callId) {
       reject(error);
     }
   });
-}
-
-/**
- * Schedule Airtable save 2 seconds after last AI response
- */
-function scheduleAirtableSave(callId) {
-  const session = sessionStore.getSession(callId);
-  
-  if (!session) {
-    return;
-  }
-  
-  // Clear existing timeout if any
-  if (session.saveTimeout) {
-    clearTimeout(session.saveTimeout);
-  }
-  
-  // Schedule new save
-  session.saveTimeout = setTimeout(() => {
-    saveCallToAirtable(callId);
-  }, SAVE_DELAY_MS);
-  
-  logger.info(`⏰ Airtable save scheduled for ${SAVE_DELAY_MS}ms from now`);
-}
-
-/**
- * Save call data to Airtable
- */
-async function saveCallToAirtable(callId) {
-  const session = sessionStore.getSession(callId);
-  
-  if (!session) {
-    logger.warn(`No session found for callId: ${callId}`);
-    return;
-  }
-  
-  // Don't save if transcript is empty
-  if (!session.transcript || session.transcript.length === 0) {
-    logger.info('📭 No transcript to save');
-    return;
-  }
-  
-  logger.info(`💾 Saving call to Airtable (${session.transcript.length} messages)`);
-  
-  try {
-    const result = await processAndSaveCall(session.transcript, session.callerPhone);
-    
-    if (result.success) {
-      logger.info(`✅ Call saved successfully! Record ID: ${result.recordId}`);
-    } else {
-      logger.error(`❌ Failed to save call: ${result.error}`);
-    }
-  } catch (error) {
-    logger.error(`Error saving to Airtable: ${error.message}`);
-  }
 }
 
 function triggerGreeting(ws) {
@@ -222,7 +199,7 @@ function triggerGreeting(ws) {
     type: "response.create",
     response: {
       modalities: ["text", "audio"],
-      instructions: "Say: Hi! This is Sarah from the law office. How can I help you today?"
+      instructions: "Say: Hi! This is Sarah from the law office. What happened?"
     }
   }));
   
