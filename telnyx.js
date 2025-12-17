@@ -53,6 +53,10 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
+  // CAPTURE CALLER PHONE NUMBER
+  const callerPhone = payload.from || null;
+  logger.info(`📱 Caller phone: ${callerPhone}`);
+  
   try {
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
@@ -74,15 +78,20 @@ async function handleCallInitiated(callControlId, payload) {
 async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
+  // CAPTURE CALLER PHONE NUMBER (in case it wasn't in call.initiated)
+  const callerPhone = payload.from || null;
+  
   try {
     // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
     
-    // Store callControlId in the session so we can use it later
+    // Store callControlId AND callerPhone in the session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
+      session.callerPhone = callerPhone;
       sessionStore.updateSession(callControlId, session);
+      logger.info(`✓ Session updated with phone: ${callerPhone}`);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
@@ -147,4 +156,3 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
-

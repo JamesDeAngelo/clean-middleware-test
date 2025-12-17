@@ -2,30 +2,23 @@ const logger = require('./logger');
 
 const sessions = new Map();
 
-function createSession(callId, ws) {
+function createSession(callId, openaiWs) {
   const session = {
-    ws,
+    callId,
+    ws: openaiWs,
     streamConnection: null,
     streamSid: null,
     callControlId: null,
-    callStartTime: new Date().toISOString(),
-    lastResponseTime: null, // Track when AI last spoke
-    saveTimer: null, // Timer for delayed save
-    leadData: {
-      name: null,
-      phoneNumber: null, // Will be set from Telnyx caller ID
-      dateOfAccident: null,
-      locationOfAccident: null,
-      typeOfTruck: null,
-      injuriesSustained: null,
-      policeReportFiled: null,
-      callTimestamp: new Date().toISOString(),
-      rawTranscript: []
-    }
+    callerPhone: null,
+    transcript: [],
+    lastAIResponseTime: null,
+    saveTimeout: null,
+    createdAt: new Date()
   };
   
   sessions.set(callId, session);
-  logger.info(`Session created: ${callId}`);
+  logger.info(`Session created for call: ${callId}`);
+  
   return session;
 }
 
@@ -39,54 +32,57 @@ function updateSession(callId, updates) {
     Object.assign(session, updates);
     sessions.set(callId, session);
   }
-  return session;
-}
-
-function updateLeadData(callId, field, value) {
-  const session = sessions.get(callId);
-  if (session && session.leadData) {
-    session.leadData[field] = value;
-    sessions.set(callId, session);
-    logger.info(`✏️  Updated ${field}: ${value}`);
-  }
-}
-
-function addTranscriptEntry(callId, speaker, text) {
-  const session = sessions.get(callId);
-  if (session && session.leadData) {
-    const timestamp = new Date().toISOString();
-    const entry = `[${timestamp}] ${speaker}: ${text}`;
-    session.leadData.rawTranscript.push(entry);
-    sessions.set(callId, session);
-  }
-}
-
-function updateLastResponseTime(callId) {
-  const session = sessions.get(callId);
-  if (session) {
-    session.lastResponseTime = Date.now();
-    sessions.set(callId, session);
-  }
 }
 
 function deleteSession(callId) {
   const session = sessions.get(callId);
   
-  // Clear any pending save timer
-  if (session?.saveTimer) {
-    clearTimeout(session.saveTimer);
+  // Clear any pending save timeout
+  if (session?.saveTimeout) {
+    clearTimeout(session.saveTimeout);
   }
   
   sessions.delete(callId);
-  logger.info(`Session deleted: ${callId}`);
+  logger.info(`Session deleted for call: ${callId}`);
+}
+
+/**
+ * Add message to transcript
+ */
+function addToTranscript(callId, role, content) {
+  const session = sessions.get(callId);
+  if (session) {
+    session.transcript.push({
+      role, // 'user' or 'assistant'
+      content,
+      timestamp: new Date()
+    });
+  }
+}
+
+/**
+ * Update last AI response time (for save trigger)
+ */
+function updateLastAIResponse(callId) {
+  const session = sessions.get(callId);
+  if (session) {
+    session.lastAIResponseTime = Date.now();
+  }
+}
+
+/**
+ * Get all active sessions
+ */
+function getAllSessions() {
+  return Array.from(sessions.values());
 }
 
 module.exports = {
   createSession,
   getSession,
   updateSession,
-  updateLeadData,
-  addTranscriptEntry,
-  updateLastResponseTime,
-  deleteSession
+  deleteSession,
+  addToTranscript,
+  updateLastAIResponse,
+  getAllSessions
 };
