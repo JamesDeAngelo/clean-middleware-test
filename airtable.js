@@ -31,36 +31,39 @@ function extractCallData(transcript, callerPhone) {
   const fullText = transcript
     .filter(msg => msg.role === 'user')
     .map(msg => msg.content)
-    .join(' ')
-    .toLowerCase();
+    .join(' ');
+
+  const fullTextLower = fullText.toLowerCase();
 
   // Extract name (look for common patterns)
   const namePatterns = [
-    /(?:my name is|i'm|i am|this is)\s+([a-z]+(?:\s+[a-z]+)?)/i,
-    /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*$/m
+    /(?:my name is|i'm|i am|this is|name's)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+    /(?:call me|it's)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i
   ];
   
   for (const pattern of namePatterns) {
-    const match = transcript.find(msg => msg.role === 'user' && pattern.test(msg.content));
-    if (match) {
-      const nameMatch = match.content.match(pattern);
-      if (nameMatch && nameMatch[1]) {
-        data['Name'] = nameMatch[1].trim();
+    const match = fullText.match(pattern);
+    if (match && match[1]) {
+      // Filter out common false positives
+      const name = match[1].trim();
+      if (!['Sarah', 'Law Office', 'Thank You'].includes(name)) {
+        data['Name'] = name;
         break;
       }
     }
   }
 
-  // Extract date (look for dates mentioned)
+  // Extract date - just capture what they said, don't try to parse it
   const datePatterns = [
     /(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4})/,
     /(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?/i,
     /(\d{1,2}\s+(?:days?|weeks?|months?|years?)\s+ago)/i,
-    /(yesterday|today|last\s+(?:week|month|year))/i
+    /(yesterday|today|last\s+(?:night|week|month|year))/i,
+    /(this\s+(?:morning|afternoon|evening|week|month))/i
   ];
 
   for (const pattern of datePatterns) {
-    const match = fullText.match(pattern);
+    const match = fullTextLower.match(pattern);
     if (match) {
       data['Date of Accident'] = match[1];
       break;
@@ -69,8 +72,9 @@ function extractCallData(transcript, callerPhone) {
 
   // Extract location
   const locationPatterns = [
-    /(?:in|at|on)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:street|road|avenue|boulevard|highway|st|rd|ave|blvd|hwy))?)/,
-    /(?:intersection|corner)\s+of\s+([^.!?]+)/i
+    /(?:happened\s+(?:in|at|on)|was\s+(?:in|at|on)|accident\s+(?:in|at|on))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Street|Road|Avenue|Boulevard|Highway|St|Rd|Ave|Blvd|Hwy))?)/i,
+    /(?:intersection|corner)\s+of\s+([^.!?,]+)/i,
+    /on\s+([A-Z][a-z]+\s+(?:Street|Road|Avenue|Boulevard|Highway|St|Rd|Ave|Blvd|Hwy))/i
   ];
 
   for (const pattern of locationPatterns) {
@@ -82,22 +86,26 @@ function extractCallData(transcript, callerPhone) {
   }
 
   // Extract truck type
-  if (/semi|18.?wheeler|tractor.?trailer|big rig/i.test(fullText)) {
+  if (/semi|18.?wheeler|tractor.?trailer|big rig/i.test(fullTextLower)) {
     data['Type of Truck'] = 'Semi-truck / 18-wheeler';
-  } else if (/pickup|pick.?up/i.test(fullText)) {
+  } else if (/pickup|pick.?up/i.test(fullTextLower)) {
     data['Type of Truck'] = 'Pickup truck';
-  } else if (/delivery|fedex|ups|amazon/i.test(fullText)) {
+  } else if (/delivery|fedex|ups|amazon/i.test(fullTextLower)) {
     data['Type of Truck'] = 'Delivery truck';
-  } else if (/dump truck/i.test(fullText)) {
+  } else if (/dump truck/i.test(fullTextLower)) {
     data['Type of Truck'] = 'Dump truck';
-  } else if (/truck/i.test(fullText)) {
+  } else if (/box truck|moving truck|u-?haul/i.test(fullTextLower)) {
+    data['Type of Truck'] = 'Box truck / Moving truck';
+  } else if (/truck/i.test(fullTextLower)) {
     data['Type of Truck'] = 'Truck (type unspecified)';
   }
 
   // Extract injuries - collect all injury mentions
   const injuryKeywords = [
-    'broken', 'fractured', 'injury', 'injured', 'hurt', 'pain', 'bleeding',
-    'concussion', 'whiplash', 'bruise', 'cut', 'sprain', 'torn', 'damaged', 'broke'
+    'broken', 'fractured', 'fracture', 'injury', 'injured', 'hurt', 'pain', 'painful',
+    'bleeding', 'bleed', 'concussion', 'whiplash', 'bruise', 'bruised', 'cut',
+    'sprain', 'sprained', 'torn', 'damaged', 'broke', 'neck', 'back', 'head',
+    'arm', 'leg', 'shoulder', 'knee', 'ankle', 'wrist', 'hip', 'ribs'
   ];
   
   const injuryMentions = [];
@@ -115,9 +123,11 @@ function extractCallData(transcript, callerPhone) {
   }
 
   // Police report
-  if (/police.*(?:came|arrived|report|filed)/i.test(fullText) || /filed.*police.*report/i.test(fullText)) {
+  if (/police.*(?:came|arrived|report|filed|there|showed|called)/i.test(fullTextLower) || 
+      /filed.*police.*report/i.test(fullTextLower) ||
+      /yes.*police/i.test(fullTextLower)) {
     data['Police Report Filed'] = 'Yes';
-  } else if (/no.*police|didn't.*call.*police|police.*didn't.*come/i.test(fullText)) {
+  } else if (/no.*police|didn't.*call.*police|police.*didn't.*come|no.*report/i.test(fullTextLower)) {
     data['Police Report Filed'] = 'No';
   }
 
@@ -137,6 +147,12 @@ async function saveToAirtable(callData, retryCount = 0) {
       if (value !== null && value !== undefined && value !== '') {
         fields[key] = value;
       }
+    }
+
+    // If no meaningful data besides phone number, don't save
+    if (Object.keys(fields).length <= 1) {
+      logger.info('📭 No meaningful data to save (only phone number)');
+      return { success: true, recordId: null, skipped: true };
     }
 
     logger.info(`📋 Sending to Airtable: ${JSON.stringify(fields, null, 2)}`);
