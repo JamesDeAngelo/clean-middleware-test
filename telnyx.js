@@ -1,6 +1,6 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
-const { connectToOpenAI, saveSessionToAirtable } = require('./websocket');
+const { connectToOpenAI } = require('./websocket');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -13,7 +13,7 @@ async function handleWebhook(req, res) {
     const payload = req.body?.data?.payload || {};
     const callControlId = payload?.call_control_id;
     
-    logger.info(`📞 Event: ${eventType}`);
+    logger.info(`Event: ${eventType}`);
     
     if (!callControlId && eventType !== 'call.hangup') {
       return res.status(400).send('Missing call_control_id');
@@ -53,12 +53,6 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  // Log caller's phone number
-  const callerNumber = payload.from;
-  if (callerNumber) {
-    logger.info(`📞 Incoming call from: ${callerNumber}`);
-  }
-  
   try {
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
@@ -81,30 +75,24 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
-    // Connect to OpenAI first
+    // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
     
-    // Store caller info in session
+    // Store callControlId in the session so we can use it later
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
-      
-      // CRITICAL: Store caller's phone number from Telnyx (guaranteed accurate)
-      if (payload.from) {
-        sessionStore.updateLeadData(callControlId, 'phoneNumber', payload.from);
-        logger.info(`📱 Phone number saved: ${payload.from}`);
-      }
-      
       sessionStore.updateSession(callControlId, session);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
+    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
+      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
+      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -137,15 +125,8 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  logger.info('🛑 Streaming stopped');
-  
-  // Save to Airtable if not already saved by timer
   const session = sessionStore.getSession(callControlId);
-  if (session && !session.savedToAirtable) {
-    await saveSessionToAirtable(callControlId);
-  }
   
-  // Cleanup
   if (session?.ws?.readyState === 1) {
     session.ws.close();
   }
@@ -155,21 +136,15 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
-  logger.info('📴 Call hangup');
-  
-  // Save to Airtable if not already saved by timer
   const session = sessionStore.getSession(callControlId);
-  if (session && !session.savedToAirtable) {
-    await saveSessionToAirtable(callControlId);
-  }
   
-  // Cleanup
   if (session?.ws?.readyState === 1) {
     session.ws.close();
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info('✓ Call ended and cleaned up');
+  logger.info('✓ Call ended');
 }
 
 module.exports = { handleWebhook };
+
