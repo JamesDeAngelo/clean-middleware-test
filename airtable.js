@@ -11,12 +11,10 @@ async function saveLeadToAirtable(leadData, retryCount = 0) {
   try {
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
     
-    // Build fields object - EXCLUDE Call Timestamp since it's computed
-    const fields = {
-      "Raw Transcript": leadData.rawTranscript || ""
-    };
+    // Build fields object - ONLY include fields we know are writable
+    const fields = {};
     
-    // Only add optional fields if they have actual values
+    // Only add fields if they have actual values
     if (leadData.name) {
       fields["Name"] = leadData.name;
     }
@@ -45,6 +43,12 @@ async function saveLeadToAirtable(leadData, retryCount = 0) {
       fields["Police Report Filed"] = leadData.policeReportFiled;
     }
     
+    // Try to add Raw Transcript as long text if it's writable
+    // If this fails, it means it's a computed field
+    if (leadData.rawTranscript) {
+      fields["Raw Transcript"] = leadData.rawTranscript;
+    }
+    
     const record = { fields };
     
     logger.info(`💾 Saving to Airtable (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
@@ -67,6 +71,32 @@ async function saveLeadToAirtable(leadData, retryCount = 0) {
     if (error.response) {
       logger.error(`Response status: ${error.response.status}`);
       logger.error(`Response data: ${JSON.stringify(error.response.data)}`);
+      
+      // If Raw Transcript is causing the error, try again without it
+      if (error.response.data?.error?.message?.includes('Raw Transcript')) {
+        logger.info('⚠️ Raw Transcript is a computed field, saving without it...');
+        
+        // Remove Raw Transcript and try one more time
+        const fieldsWithoutTranscript = {};
+        if (leadData.name) fieldsWithoutTranscript["Name"] = leadData.name;
+        if (leadData.phoneNumber) fieldsWithoutTranscript["Phone Number"] = leadData.phoneNumber;
+        if (leadData.dateOfAccident) fieldsWithoutTranscript["Date of Accident"] = leadData.dateOfAccident;
+        if (leadData.locationOfAccident) fieldsWithoutTranscript["Location of Accident"] = leadData.locationOfAccident;
+        if (leadData.typeOfTruck) fieldsWithoutTranscript["Type of Truck"] = leadData.typeOfTruck;
+        if (leadData.injuriesSustained) fieldsWithoutTranscript["Injuries Sustained"] = leadData.injuriesSustained;
+        if (leadData.policeReportFiled) fieldsWithoutTranscript["Police Report Filed"] = leadData.policeReportFiled;
+        
+        const retryResponse = await axios.post(url, { fields: fieldsWithoutTranscript }, {
+          headers: {
+            'Authorization': `Bearer ${AIRTABLE_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
+        
+        logger.info(`✅ Successfully saved to Airtable (without transcript)! Record ID: ${retryResponse.data.id}`);
+        return retryResponse.data;
+      }
     }
     
     // Retry logic
