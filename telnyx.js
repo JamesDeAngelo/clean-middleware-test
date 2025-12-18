@@ -138,20 +138,10 @@ async function handleStreamingStopped(callControlId) {
   const session = sessionStore.getSession(callControlId);
   
   if (session) {
-    // Try to save data before cleanup
-    if (session.dataExtractor && !session.dataSaved) {
-      const leadData = session.dataExtractor.getData();
-      if (leadData.phoneNumber) {
-        logger.info('💾 Saving data on streaming stop');
-        await saveToAirtable(leadData);
-      }
-    }
-    
+    // Don't save here - let call.hangup handle the final save
     if (session.ws?.readyState === 1) {
       session.ws.close();
     }
-    
-    // Don't delete session immediately - let call.hangup handle it
   }
   
   logger.info('✓ Streaming stop handled');

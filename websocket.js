@@ -192,27 +192,8 @@ async function connectToOpenAI(callId, phoneNumber = '') {
       ws.on('close', () => {
         logger.info('OpenAI closed');
         
-        // Final save attempt on close if not already saved
-        const session = sessionStore.getSession(callId);
-        if (session?.dataExtractor && !session.dataSaved) {
-          const leadData = session.dataExtractor.getData();
-          
-          logger.info(`💾 Final save attempt on close. Data: ${JSON.stringify(leadData)}`);
-          
-          // Save if we have ANY data with phone number
-          if (leadData.phoneNumber) {
-            logger.info('💾 Final save on connection close');
-            saveToAirtable(leadData).then(result => {
-              if (result.success) {
-                logger.info(`✅ Final save successful! Record ID: ${result.recordId}`);
-              } else {
-                logger.error(`❌ Final save failed: ${result.error}`);
-              }
-            });
-          } else {
-            logger.info('⏭️ No final save - no phone number collected');
-          }
-        }
+        // Don't save here - let the call.hangup handler do final save
+        // This prevents duplicate saves
         
         if (saveTimeout) {
           clearTimeout(saveTimeout);

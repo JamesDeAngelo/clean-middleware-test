@@ -45,7 +45,12 @@ function setupMediaStreamWebSocket(wss) {
           chunkCount++;
           
           if (chunkCount % 100 === 0) {
-            logger.info(`📥 ${chunkCount} chunks received from Telnyx`);
+            logger.info(`📥 ${chunkCount} chunks received from Telnyx (track: ${msg.media.track})`);
+          }
+          
+          // Log first inbound chunk to verify we're receiving caller audio
+          if (chunkCount === 1) {
+            logger.info(`📥 First chunk: track=${msg.media.track}, payload_length=${msg.media.payload?.length}`);
           }
           
           // Only forward inbound audio to OpenAI
@@ -55,10 +60,7 @@ function setupMediaStreamWebSocket(wss) {
         }
         
         if (msg.event === 'stop') {
-          logger.info(`Stream ended: ${chunkCount} total chunks`);
-          if (keepAliveInterval) {
-            clearInterval(keepAliveInterval);
-          }
+          logger.info(`⛔ Stream STOP event received. Total chunks: ${chunkCount}`);
         }
         
       } catch (err) {

@@ -11,19 +11,28 @@ async function saveToAirtable(leadData, retries = 3) {
     try {
       logger.info(`📊 Saving to Airtable (attempt ${attempt}/${retries})`);
       
+      // Build fields object, only include non-empty values
+      const fields = {};
+      
+      if (leadData.name) fields['Name'] = leadData.name;
+      if (leadData.phoneNumber) fields['Phone Number'] = leadData.phoneNumber;
+      if (leadData.dateOfAccident) fields['Date of Accident'] = leadData.dateOfAccident;
+      if (leadData.locationOfAccident) fields['Location of Accident'] = leadData.locationOfAccident;
+      if (leadData.typeOfTruck) fields['Type of Truck'] = leadData.typeOfTruck;
+      if (leadData.injuriesSustained) fields['Injuries Sustained'] = leadData.injuriesSustained;
+      if (leadData.policeReportFiled) fields['Police Report Filed'] = leadData.policeReportFiled;
+      
+      // Make sure we have at least one field to save
+      if (Object.keys(fields).length === 0) {
+        logger.info('⏭️ No data to save - all fields empty');
+        return { success: false, error: 'No data to save' };
+      }
+      
+      logger.info(`📊 Saving fields: ${JSON.stringify(fields)}`);
+      
       const response = await axios.post(
         AIRTABLE_URL,
-        {
-          fields: {
-            'Name': leadData.name || '',
-            'Phone Number': leadData.phoneNumber || '',
-            'Date of Accident': leadData.dateOfAccident || '',
-            'Location of Accident': leadData.locationOfAccident || '',
-            'Type of Truck': leadData.typeOfTruck || '',
-            'Injuries Sustained': leadData.injuriesSustained || '',
-            'Police Report Filed': leadData.policeReportFiled || ''
-          }
-        },
+        { fields },
         {
           headers: {
             'Authorization': `Bearer ${AIRTABLE_API_KEY}`,
