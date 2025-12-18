@@ -1,6 +1,8 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
+const { saveLeadToAirtable } = require('./airtable');
+const { extractLeadDataFromTranscript } = require('./openai');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -53,11 +55,10 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  // Capture caller phone number from Telnyx payload
   const callerPhone = payload.from || payload.caller_id_number || null;
   
   if (callerPhone) {
-    logger.info(`📱 Caller phone: ${callerPhone}`);
+    logger.info(`📱 Caller: ${callerPhone}`);
   }
   
   try {
@@ -82,24 +83,20 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
-    // Connect to OpenAI first
     await connectToOpenAI(callControlId);
     
-    // Get caller phone number
     const callerPhone = payload.from || payload.caller_id_number || null;
     
-    // Store callControlId and callerPhone in the session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
       session.callerPhone = callerPhone;
       sessionStore.updateSession(callControlId, session);
-      logger.info(`📱 Stored caller phone: ${callerPhone}`);
+      logger.info(`📱 Stored: ${callerPhone}`);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
@@ -113,8 +110,6 @@ async function handleCallAnswered(callControlId, payload) {
       }
     };
     
-    logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
-    
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
       streamingConfig,
@@ -126,7 +121,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with PCMU @ 8kHz (bidirectional RTP mode)');
+    logger.info('✓ Streaming started');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -136,7 +131,46 @@ async function handleCallAnswered(callControlId, payload) {
   }
 }
 
+async function saveSessionDataBeforeCleanup(callControlId) {
+  try {
+    if (sessionStore.wasSaved(callControlId)) {
+      logger.info(`⏭️ Already saved`);
+      return;
+    }
+    
+    const session = sessionStore.getSession(callControlId);
+    
+    if (!session) {
+      logger.warn(`⚠️ No session to save`);
+      return;
+    }
+    
+    const transcript = sessionStore.getFullTranscript(callControlId);
+    
+    if (!transcript || transcript.trim().length === 0) {
+      logger.warn(`⚠️ No transcript`);
+      return;
+    }
+    
+    logger.info(`💾 Saving call data...`);
+    
+    const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
+    
+    await saveLeadToAirtable(leadData);
+    
+    sessionStore.markAsSaved(callControlId);
+    
+    logger.info(`✅ Saved successfully!`);
+    
+  } catch (error) {
+    logger.error(`❌ Save failed: ${error.message}`);
+  }
+}
+
 async function handleStreamingStopped(callControlId) {
+  // SAVE BEFORE CLEANUP
+  await saveSessionDataBeforeCleanup(callControlId);
+  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
@@ -148,6 +182,9 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
+  // SAVE BEFORE CLEANUP
+  await saveSessionDataBeforeCleanup(callControlId);
+  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {

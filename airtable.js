@@ -10,17 +10,24 @@ const AIRTABLE_API_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${enco
  * Save lead data to Airtable with retry logic
  */
 async function saveLeadToAirtable(leadData, retries = 3) {
-  const payload = {
-    fields: {
-      "Name": leadData.name || "",
-      "Phone Number": leadData.phoneNumber || "",
-      "Date of Accident": leadData.dateOfAccident || "",
-      "Location of Accident": leadData.locationOfAccident || "",
-      "Type of Truck": leadData.typeOfTruck || "",
-      "Injuries Sustained": leadData.injuriesSustained || "",
-      "Police Report Filed": leadData.policeReportFiled || ""
-    }
+  // Build fields object, EXCLUDING empty date fields
+  const fields = {
+    "Name": leadData.name || "",
+    "Phone Number": leadData.phoneNumber || "",
+    "Location of Accident": leadData.locationOfAccident || "",
+    "Type of Truck": leadData.typeOfTruck || "",
+    "Injuries Sustained": leadData.injuriesSustained || "",
+    "Police Report Filed": leadData.policeReportFiled || ""
   };
+
+  // CRITICAL FIX: Only add Date of Accident if it has a value
+  // Airtable Date fields CANNOT accept empty strings
+  if (leadData.dateOfAccident && leadData.dateOfAccident.trim() !== "") {
+    fields["Date of Accident"] = leadData.dateOfAccident;
+  }
+  // If date is empty, we simply DON'T include the field at all
+
+  const payload = { fields };
 
   logger.info(`📊 Attempting to save lead to Airtable: ${leadData.name || 'Unknown'}`);
 

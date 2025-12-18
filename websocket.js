@@ -50,21 +50,13 @@ async function connectToOpenAI(callId) {
             const session = sessionStore.getSession(callId);
             
             if (!session) {
-              logger.error(`❌ NO SESSION found for callId: ${callId}`);
               return;
             }
             
-            if (!session.streamConnection) {
-              logger.error(`❌ NO streamConnection in session`);
+            if (!session.streamConnection || session.streamConnection.readyState !== 1) {
               return;
             }
             
-            if (session.streamConnection.readyState !== 1) {
-              logger.error(`❌ streamConnection not ready. State: ${session.streamConnection.readyState}`);
-              return;
-            }
-            
-            // Send audio DIRECTLY back to Telnyx via WebSocket
             const audioPayload = {
               event: 'media',
               stream_sid: session.streamSid,
@@ -82,18 +74,15 @@ async function connectToOpenAI(callId) {
             }
           }
 
-          // Track AI transcripts as they come in (delta by delta)
+          // Track AI transcripts
           if (msg.type === "response.audio_transcript.delta") {
             currentAssistantMessage += msg.delta;
           }
 
-          // When AI finishes speaking, save the full message
           if (msg.type === "response.audio_transcript.done") {
             if (currentAssistantMessage.trim()) {
               sessionStore.addAssistantTranscript(callId, currentAssistantMessage.trim());
               currentAssistantMessage = "";
-              
-              // Reset save timer - we'll save 2 seconds after LAST AI response
               resetSaveTimer(callId);
             }
           }
@@ -130,7 +119,7 @@ async function connectToOpenAI(callId) {
           }
           
           if (msg.type === "session.updated") {
-            logger.info(`✓ Session updated. Audio formats: in=${msg.session?.input_audio_format}, out=${msg.session?.output_audio_format}`);
+            logger.info(`✓ Session updated`);
           }
 
         } catch (err) {
@@ -145,8 +134,7 @@ async function connectToOpenAI(callId) {
 
       ws.on('close', () => {
         logger.info('OpenAI closed');
-        // Trigger immediate save when connection closes (if not already saved)
-        triggerImmediateSave(callId);
+        // Don't save here - session might already be deleted
       });
 
     } catch (error) {
@@ -157,89 +145,61 @@ async function connectToOpenAI(callId) {
 }
 
 function resetSaveTimer(callId) {
-  // Check if already saved
   if (sessionStore.wasSaved(callId)) {
-    logger.info(`⏭️ Already saved ${callId}, skipping timer reset`);
     return;
   }
   
-  // Clear existing timer if any
   if (saveTimers.has(callId)) {
     clearTimeout(saveTimers.get(callId));
   }
   
-  // Set new timer - save 2 seconds after last AI response
   const timer = setTimeout(async () => {
     await saveCallDataToAirtable(callId);
     saveTimers.delete(callId);
   }, SAVE_DELAY_MS);
   
   saveTimers.set(callId, timer);
-  logger.info(`⏱️ Save timer reset for ${callId} (will save in ${SAVE_DELAY_MS}ms)`);
-}
-
-function triggerImmediateSave(callId) {
-  // Check if already saved
-  if (sessionStore.wasSaved(callId)) {
-    logger.info(`⏭️ Already saved ${callId}, skipping immediate save`);
-    return;
-  }
-  
-  // Clear any pending timer
-  if (saveTimers.has(callId)) {
-    clearTimeout(saveTimers.get(callId));
-    saveTimers.delete(callId);
-  }
-  
-  // Save immediately
-  logger.info(`🚀 Triggering immediate save for ${callId}`);
-  saveCallDataToAirtable(callId);
+  logger.info(`⏱️ Save timer reset (will save in ${SAVE_DELAY_MS}ms)`);
 }
 
 async function saveCallDataToAirtable(callId) {
   try {
-    // Double-check we haven't saved already
     if (sessionStore.wasSaved(callId)) {
-      logger.warn(`⚠️ Duplicate save prevented for ${callId}`);
+      logger.warn(`⚠️ Already saved ${callId}`);
       return;
     }
     
     const session = sessionStore.getSession(callId);
     
     if (!session) {
-      logger.error(`❌ Cannot save - no session found for ${callId}`);
+      logger.error(`❌ No session found for ${callId}`);
       return;
     }
     
-    // Get full transcript
     const transcript = sessionStore.getFullTranscript(callId);
     
     if (!transcript || transcript.trim().length === 0) {
-      logger.warn(`⚠️ No transcript to save for ${callId}`);
+      logger.warn(`⚠️ No transcript for ${callId}`);
       return;
     }
     
-    logger.info(`📋 Full transcript for ${callId}:\n${transcript}`);
+    logger.info(`📋 Extracting data from transcript...`);
     
-    // Extract structured data from transcript
     const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
     
-    // Save to Airtable
     await saveLeadToAirtable(leadData);
     
-    // Mark as saved to prevent duplicates
     sessionStore.markAsSaved(callId);
     
-    logger.info(`✅ Call data saved successfully for ${callId} - WILL NOT SAVE AGAIN`);
+    logger.info(`✅ Saved to Airtable successfully!`);
     
   } catch (error) {
-    logger.error(`❌ Failed to save call data: ${error.message}`);
+    logger.error(`❌ Failed to save: ${error.message}`);
   }
 }
 
 function triggerGreeting(ws) {
   if (ws?.readyState !== 1) {
-    logger.error('Cannot trigger greeting - WebSocket not open');
     return;
   }
   
@@ -258,24 +218,20 @@ function attachTelnyxStream(callId, telnyxWs, streamSid) {
   const session = sessionStore.getSession(callId);
   
   if (!session) {
-    logger.error(`❌ Cannot attach stream - No session for: ${callId}`);
+    logger.error(`❌ No session for: ${callId}`);
     return;
   }
   
   session.streamConnection = telnyxWs;
   session.streamSid = streamSid;
   sessionStore.updateSession(callId, session);
-  logger.info(`✓ Stream attached. WebSocket state: ${telnyxWs.readyState}`);
+  logger.info(`✓ Stream attached`);
 }
 
 function forwardAudioToOpenAI(callId, audioBuffer) {
   const session = sessionStore.getSession(callId);
   
-  if (!session) {
-    return;
-  }
-  
-  if (!session.ws || session.ws.readyState !== 1) {
+  if (!session || !session.ws || session.ws.readyState !== 1) {
     return;
   }
   
