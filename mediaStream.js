@@ -8,20 +8,8 @@ function setupMediaStreamWebSocket(wss) {
     let callId = null;
     let streamSid = null;
     let chunkCount = 0;
-    let keepAliveInterval = null;
     
     logger.info('📞 New WebSocket connection established');
-    
-    // Keep connection alive
-    keepAliveInterval = setInterval(() => {
-      if (ws.readyState === 1) {
-        try {
-          ws.ping();
-        } catch (err) {
-          logger.error(`Ping error: ${err.message}`);
-        }
-      }
-    }, 30000); // Ping every 30 seconds
     
     ws.on('message', (message) => {
       try {
@@ -45,12 +33,7 @@ function setupMediaStreamWebSocket(wss) {
           chunkCount++;
           
           if (chunkCount % 100 === 0) {
-            logger.info(`📥 ${chunkCount} chunks received from Telnyx (track: ${msg.media.track})`);
-          }
-          
-          // Log first inbound chunk to verify we're receiving caller audio
-          if (chunkCount === 1) {
-            logger.info(`📥 First chunk: track=${msg.media.track}, payload_length=${msg.media.payload?.length}`);
+            logger.info(`📥 ${chunkCount} chunks received from Telnyx`);
           }
           
           // Only forward inbound audio to OpenAI
@@ -60,7 +43,7 @@ function setupMediaStreamWebSocket(wss) {
         }
         
         if (msg.event === 'stop') {
-          logger.info(`⛔ Stream STOP event received. Total chunks: ${chunkCount}`);
+          logger.info(`Stream ended: ${chunkCount} total chunks`);
         }
         
       } catch (err) {
@@ -70,20 +53,10 @@ function setupMediaStreamWebSocket(wss) {
     
     ws.on('error', (err) => {
       logger.error(`WS error: ${err.message}`);
-      if (keepAliveInterval) {
-        clearInterval(keepAliveInterval);
-      }
     });
     
     ws.on('close', () => {
       logger.info(`WebSocket closed for call: ${callId}`);
-      if (keepAliveInterval) {
-        clearInterval(keepAliveInterval);
-      }
-    });
-    
-    ws.on('pong', () => {
-      // Connection is alive
     });
   });
 }

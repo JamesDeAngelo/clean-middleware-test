@@ -1,7 +1,6 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
-const { saveToAirtable } = require('./airtable');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -15,11 +14,6 @@ async function handleWebhook(req, res) {
     const callControlId = payload?.call_control_id;
     
     logger.info(`Event: ${eventType}`);
-    
-    // LOG THE ENTIRE PAYLOAD for debugging
-    if (eventType === 'call.initiated' || eventType === 'call.answered') {
-      logger.info(`📋 Full payload: ${JSON.stringify(payload, null, 2)}`);
-    }
     
     if (!callControlId && eventType !== 'call.hangup') {
       return res.status(400).send('Missing call_control_id');
@@ -59,9 +53,12 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  // Capture caller's phone number from Telnyx
-  const callerPhoneNumber = payload?.from || '';
-  logger.info(`📞 Caller ID: ${callerPhoneNumber}`);
+  // Capture caller phone number from Telnyx payload
+  const callerPhone = payload.from || payload.caller_id_number || null;
+  
+  if (callerPhone) {
+    logger.info(`📱 Caller phone: ${callerPhone}`);
+  }
   
   try {
     await axios.post(
@@ -84,30 +81,36 @@ async function handleCallInitiated(callControlId, payload) {
 async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
-  // Get caller's phone number - try multiple fields
-  const callerPhoneNumber = payload?.from || payload?.caller_id_number || payload?.call_leg_id || '';
-  logger.info(`📞 Raw payload.from: ${payload?.from}`);
-  logger.info(`📞 Raw payload.caller_id_number: ${payload?.caller_id_number}`);
-  logger.info(`📞 Using phone number: ${callerPhoneNumber}`);
-  
   try {
-    // Connect to OpenAI first and store callControlId in session
-    await connectToOpenAI(callControlId, callerPhoneNumber);
+    // Connect to OpenAI first
+    await connectToOpenAI(callControlId);
     
-    // Store callControlId in the session
+    // Get caller phone number
+    const callerPhone = payload.from || payload.caller_id_number || null;
+    
+    // Store callControlId and callerPhone in the session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
+      session.callerPhone = callerPhone;
       sessionStore.updateSession(callControlId, session);
+      logger.info(`📱 Stored caller phone: ${callerPhone}`);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Simplified streaming config - don't use bidirectional RTP for now
+    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      enable_dialogflow: false
+      stream_bidirectional_mode: 'rtp',
+      stream_bidirectional_codec: 'PCMU',
+      enable_dialogflow: false,
+      media_format: {
+        codec: 'PCMU',
+        sample_rate: 8000,
+        channels: 1
+      }
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
@@ -123,7 +126,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with both_tracks mode');
+    logger.info('✓ Streaming started with PCMU @ 8kHz (bidirectional RTP mode)');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -134,40 +137,24 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  logger.info(`🔴 Streaming stopped for call: ${callControlId}`);
   const session = sessionStore.getSession(callControlId);
   
-  if (session) {
-    // Don't save here - let call.hangup handle the final save
-    if (session.ws?.readyState === 1) {
-      session.ws.close();
-    }
+  if (session?.ws?.readyState === 1) {
+    session.ws.close();
   }
   
-  logger.info('✓ Streaming stop handled');
+  sessionStore.deleteSession(callControlId);
+  logger.info('✓ Cleanup completed');
 }
 
 async function handleCallHangup(callControlId) {
-  logger.info(`🔴 Call hangup for: ${callControlId}`);
   const session = sessionStore.getSession(callControlId);
   
-  if (session) {
-    // Final save attempt
-    if (session.dataExtractor && !session.dataSaved) {
-      const leadData = session.dataExtractor.getData();
-      if (leadData.phoneNumber) {
-        logger.info('💾 Final save on call hangup');
-        await saveToAirtable(leadData);
-      }
-    }
-    
-    if (session.ws?.readyState === 1) {
-      session.ws.close();
-    }
-    
-    sessionStore.deleteSession(callControlId);
+  if (session?.ws?.readyState === 1) {
+    session.ws.close();
   }
   
+  sessionStore.deleteSession(callControlId);
   logger.info('✓ Call ended');
 }
 

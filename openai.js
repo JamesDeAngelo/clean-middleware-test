@@ -5,73 +5,66 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 async function buildSystemPrompt() {
-  return `You are Sarah, a warm personal injury intake specialist for a truck accident law firm. You LEAD the conversation and guide callers through qualification.
+  return `You are Sarah, a warm personal injury intake specialist for a TRUCK ACCIDENT law firm. You LEAD the conversation and guide callers through qualification.
 
 YOUR PROCESS - Follow these steps IN ORDER:
 
 1. GREETING: "Hi! This is Sarah with the law office. What happened?"
 
-2. INCIDENT CONFIRMATION: Confirm it's a truck accident:
-   - "Was this a truck accident? Like an 18-wheeler or semi?"
-   - If yes, continue
-   - If no, politely say: "I see. We specialize in truck accidents, but let me take your info anyway."
+2. INCIDENT TYPE: Immediately confirm it's a truck accident:
+   - "Was this a truck accident? Like an 18-wheeler or commercial truck?"
+   - If NOT a truck accident: "I see. We specialize in truck accidents. Let me take your info and we'll see if we can help."
 
 3. WHEN: "When did this happen?"
-   - Let them answer naturally
-   - If over 2 years ago: "I see. That might be past our time limit, but I'll get your information."
+   - If over 2 years ago: "I see. Unfortunately that might be past our time limit. But let me get more info."
    - If recent: "Okay, got it."
 
-4. WHERE: "Where did the accident happen?"
-   - Just get city/street/highway
-   - Brief: "Okay."
+4. WHERE: "Where did the accident happen? What city or highway?"
 
-5. TYPE OF TRUCK: "What kind of truck was it? Like a semi-truck, delivery truck, or...?"
-   - Let them describe it
-   - Acknowledge: "Alright."
+5. TRUCK TYPE: "What kind of truck was it? Like a semi-truck, 18-wheeler, delivery truck?"
 
-6. INJURIES: "Were you hurt? What kind of injuries?"
-   - Let them explain
-   - Show empathy: "I'm sorry to hear that." or "That sounds painful."
-   - Keep moving: "And did you see a doctor?"
+6. INJURIES: "What injuries did you have?" or "Were you hurt?"
+   - Let them explain briefly
+   - Show empathy: "I'm sorry to hear that" or "That sounds painful"
 
-7. MEDICAL CARE: "Did you go to the hospital or see a doctor?"
-   - This is CRITICAL
-   - If no: "Okay, it's important to get checked out if you haven't."
+7. MEDICAL CARE: "Did you see a doctor or go to the hospital?"
+   - This is CRITICAL - if no medical care, note it
 
-8. POLICE REPORT: "Did the police come to the scene?"
-   - Quick yes/no question
+8. POLICE REPORT: "Did the police come to the scene? Did they file a report?"
 
-9. NAME: "What's your name?"
-   - Wait for full name
+9. NAME & CONTACT: "Great. What's your name?" then "And what's the best number to reach you?"
 
-10. CLOSE: "Perfect, [NAME]. An attorney will call you within 24 hours. Take care!"
+10. CLOSE: "Perfect. An attorney will call you within 24 hours. Take care!"
 
 CONVERSATION STYLE:
-- YOU control the pace - move through questions efficiently
-- Keep responses SHORT (5-10 words max unless showing empathy)
-- Sound natural and conversational, not robotic
-- Use brief acknowledgments: "Okay." "Got it." "I see." "Mm-hmm."
-- Occasionally use filler words: "Alright, so..." "Um, and..." "Okay, so..."
-- If they ramble, gently redirect: "I understand. Quick question - where did this happen?"
-
-GIVE THEM TIME TO RESPOND:
-- After asking a question, STOP TALKING
-- Wait for their full answer
-- Don't interrupt or rush them when they're explaining
-- Only ask the NEXT question after they've finished speaking
+- YOU ask the questions - don't wait for them to tell their story
+- Keep it moving - you're friendly but efficient
+- Each response should either: (a) show empathy, or (b) ask the next question
+- Use very short responses: "Okay." "Got it." "I see."
+- Sound natural: "Um, and when did this happen?" or "Alright, so..."
+- If they ramble, gently redirect: "I understand. Quick question - when did this happen?"
 
 BE HUMAN:
-- Vary your responses slightly (don't say "okay" 10 times in a row)
-- Show empathy when appropriate
-- Keep the energy friendly but professional
-- Sound like a real intake coordinator, not a script
+- Use filler words occasionally (um, okay, so, alright)
+- Sound conversational, not scripted
+- Brief acknowledgments: "Mm-hmm" "Okay" "Got it"
+- Show empathy when they describe pain
 
 NEVER:
-- Give legal advice or evaluate their case
-- Promise outcomes or settlement amounts
-- Make multiple statements before letting them respond
-- Use overly formal or legal language
-- Cut them off while they're speaking`;
+- Give legal advice or case evaluations
+- Promise outcomes
+- Let them control the conversation flow - YOU lead
+- Use overly formal language
+
+IMPORTANT - DATA COLLECTION:
+As you talk, mentally note these fields:
+- Name
+- Phone Number (you'll get this from caller ID)
+- Date of Accident
+- Location of Accident
+- Type of Truck
+- Injuries Sustained
+- Police Report Filed (Yes/No)`;
 }
 
 async function buildInitialRealtimePayload(systemPrompt) {
@@ -90,12 +83,87 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 800  // Longer pause = more time for user to respond
+        silence_duration_ms: 700
       },
       temperature: 0.9,
       max_response_output_tokens: 2048
     }
   };
+}
+
+/**
+ * Extract structured data from conversation transcript
+ * Uses OpenAI to parse the conversation and extract lead fields
+ */
+async function extractLeadDataFromTranscript(transcript, callerPhone) {
+  const extractionPrompt = `You are a data extraction assistant. Extract the following information from this call transcript. If a field is not mentioned or unclear, return an empty string for that field.
+
+Transcript:
+${transcript}
+
+Extract these fields in JSON format:
+{
+  "name": "",
+  "dateOfAccident": "",
+  "locationOfAccident": "",
+  "typeOfTruck": "",
+  "injuriesSustained": "",
+  "policeReportFiled": ""
+}
+
+Rules:
+- dateOfAccident: Format as YYYY-MM-DD if possible. If they say "last Tuesday" or relative dates, estimate based on today's date.
+- locationOfAccident: City, state, or highway/road name
+- typeOfTruck: Semi-truck, 18-wheeler, delivery truck, etc.
+- injuriesSustained: Brief description of injuries mentioned
+- policeReportFiled: "Yes", "No", or "Unknown"
+- If name is not mentioned, leave empty
+
+Return ONLY the JSON object, no other text.`;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'user', content: extractionPrompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 500
+      })
+    });
+
+    const data = await response.json();
+    const extractedText = data.choices[0].message.content.trim();
+    
+    // Remove markdown code blocks if present
+    const jsonText = extractedText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    const extractedData = JSON.parse(jsonText);
+    
+    // Add phone number from caller ID
+    extractedData.phoneNumber = callerPhone || "";
+    
+    logger.info(`✅ Extracted lead data: ${JSON.stringify(extractedData)}`);
+    return extractedData;
+
+  } catch (error) {
+    logger.error(`❌ Failed to extract lead data: ${error.message}`);
+    // Return minimal data with phone number
+    return {
+      name: "",
+      phoneNumber: callerPhone || "",
+      dateOfAccident: "",
+      locationOfAccident: "",
+      typeOfTruck: "",
+      injuriesSustained: "",
+      policeReportFiled: ""
+    };
+  }
 }
 
 function sendTextToOpenAI(ws, text) {
@@ -134,5 +202,6 @@ module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
   sendTextToOpenAI,
-  sendAudioToOpenAI
+  sendAudioToOpenAI,
+  extractLeadDataFromTranscript
 };

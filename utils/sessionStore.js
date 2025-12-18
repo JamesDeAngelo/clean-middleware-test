@@ -2,23 +2,24 @@ const logger = require('./logger');
 
 const sessions = new Map();
 
-function createSession(callId, openaiWs) {
+function createSession(callId, ws) {
   const session = {
+    ws,
     callId,
-    ws: openaiWs,
     streamConnection: null,
     streamSid: null,
     callControlId: null,
     callerPhone: null,
-    transcript: [],
-    lastAIResponseTime: null,
-    saveTimeout: null,
+    transcript: {
+      user: [],
+      assistant: []
+    },
+    lastAiResponseTime: null,
     createdAt: new Date()
   };
   
   sessions.set(callId, session);
-  logger.info(`Session created for call: ${callId}`);
-  
+  logger.info(`✓ Session created: ${callId}`);
   return session;
 }
 
@@ -32,49 +33,61 @@ function updateSession(callId, updates) {
     Object.assign(session, updates);
     sessions.set(callId, session);
   }
+  return session;
 }
 
 function deleteSession(callId) {
-  const session = sessions.get(callId);
-  
-  // Clear any pending save timeout
-  if (session?.saveTimeout) {
-    clearTimeout(session.saveTimeout);
+  const deleted = sessions.delete(callId);
+  if (deleted) {
+    logger.info(`✓ Session deleted: ${callId}`);
   }
-  
-  sessions.delete(callId);
-  logger.info(`Session deleted for call: ${callId}`);
+  return deleted;
 }
 
-/**
- * Add message to transcript
- */
-function addToTranscript(callId, role, content) {
+function addUserTranscript(callId, text) {
   const session = sessions.get(callId);
   if (session) {
-    session.transcript.push({
-      role, // 'user' or 'assistant'
-      content,
+    session.transcript.user.push({
+      text,
       timestamp: new Date()
     });
+    logger.info(`👤 User said: "${text}"`);
   }
 }
 
-/**
- * Update last AI response time (for save trigger)
- */
-function updateLastAIResponse(callId) {
+function addAssistantTranscript(callId, text) {
   const session = sessions.get(callId);
   if (session) {
-    session.lastAIResponseTime = Date.now();
+    session.transcript.assistant.push({
+      text,
+      timestamp: new Date()
+    });
+    session.lastAiResponseTime = Date.now();
+    logger.info(`🤖 AI said: "${text}"`);
   }
 }
 
-/**
- * Get all active sessions
- */
+function getFullTranscript(callId) {
+  const session = sessions.get(callId);
+  if (!session) return "";
+  
+  const allMessages = [
+    ...session.transcript.user.map(t => ({ ...t, speaker: 'User' })),
+    ...session.transcript.assistant.map(t => ({ ...t, speaker: 'AI' }))
+  ].sort((a, b) => a.timestamp - b.timestamp);
+  
+  return allMessages
+    .map(msg => `${msg.speaker}: ${msg.text}`)
+    .join('\n');
+}
+
 function getAllSessions() {
-  return Array.from(sessions.values());
+  return Array.from(sessions.entries()).map(([callId, session]) => ({
+    callId,
+    callerPhone: session.callerPhone,
+    createdAt: session.createdAt,
+    lastActivity: session.lastAiResponseTime
+  }));
 }
 
 module.exports = {
@@ -82,7 +95,8 @@ module.exports = {
   getSession,
   updateSession,
   deleteSession,
-  addToTranscript,
-  updateLastAIResponse,
+  addUserTranscript,
+  addAssistantTranscript,
+  getFullTranscript,
   getAllSessions
 };

@@ -4,6 +4,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const { handleWebhook } = require('./telnyx');
 const { setupMediaStreamWebSocket } = require('./mediaStream');
+const { testAirtableConnection } = require('./airtable');
 const logger = require('./utils/logger');
 
 const app = express();
@@ -34,9 +35,19 @@ app.get('/health', (req, res) => {
 app.post('/webhook/telnyx', handleWebhook);
 
 // Start the server
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   logger.info(`HTTP server listening on port ${PORT}`);
   logger.info(`WebSocket server ready at /media-stream`);
+  
+  // Test Airtable connection on startup
+  logger.info('🔍 Testing Airtable connection...');
+  const airtableConnected = await testAirtableConnection();
+  
+  if (airtableConnected) {
+    logger.info('✅ Airtable integration ready!');
+  } else {
+    logger.error('❌ Airtable connection failed - check your credentials');
+  }
 });
 
 // Graceful shutdown
