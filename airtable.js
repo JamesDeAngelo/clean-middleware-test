@@ -3,62 +3,90 @@ const logger = require('./utils/logger');
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
-const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME;
-const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
+const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Lead Contacts';
+const AIRTABLE_API_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
 
-async function saveToAirtable(leadData, retries = 3) {
+/**
+ * Save lead data to Airtable with retry logic
+ */
+async function saveLeadToAirtable(leadData, retries = 3) {
+  const payload = {
+    fields: {
+      "Name": leadData.name || "",
+      "Phone Number": leadData.phoneNumber || "",
+      "Date of Accident": leadData.dateOfAccident || "",
+      "Location of Accident": leadData.locationOfAccident || "",
+      "Type of Truck": leadData.typeOfTruck || "",
+      "Injuries Sustained": leadData.injuriesSustained || "",
+      "Police Report Filed": leadData.policeReportFiled || ""
+    }
+  };
+
+  logger.info(`📊 Attempting to save lead to Airtable: ${leadData.name || 'Unknown'}`);
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      logger.info(`📊 Saving to Airtable (attempt ${attempt}/${retries})`);
-      
-      // Build fields object, only include non-empty values
-      const fields = {};
-      
-      if (leadData.name) fields['Name'] = leadData.name;
-      if (leadData.phoneNumber) fields['Phone Number'] = leadData.phoneNumber;
-      if (leadData.dateOfAccident) fields['Date of Accident'] = leadData.dateOfAccident;
-      if (leadData.locationOfAccident) fields['Location of Accident'] = leadData.locationOfAccident;
-      if (leadData.typeOfTruck) fields['Type of Truck'] = leadData.typeOfTruck;
-      if (leadData.injuriesSustained) fields['Injuries Sustained'] = leadData.injuriesSustained;
-      if (leadData.policeReportFiled) fields['Police Report Filed'] = leadData.policeReportFiled;
-      
-      // Make sure we have at least one field to save
-      if (Object.keys(fields).length === 0) {
-        logger.info('⏭️ No data to save - all fields empty');
-        return { success: false, error: 'No data to save' };
-      }
-      
-      logger.info(`📊 Saving fields: ${JSON.stringify(fields)}`);
-      
       const response = await axios.post(
-        AIRTABLE_URL,
-        { fields },
+        AIRTABLE_API_URL,
+        payload,
         {
           headers: {
             'Authorization': `Bearer ${AIRTABLE_API_KEY}`,
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 10000
         }
       );
-      
-      logger.info(`✅ Saved to Airtable: Record ID ${response.data.id}`);
-      return { success: true, recordId: response.data.id };
-      
+
+      logger.info(`✅ Lead saved to Airtable successfully! Record ID: ${response.data.id}`);
+      return response.data;
+
     } catch (error) {
-      logger.error(`❌ Airtable save failed (attempt ${attempt}): ${error.message}`);
+      logger.error(`❌ Airtable save attempt ${attempt}/${retries} failed: ${error.message}`);
       
       if (error.response) {
         logger.error(`Airtable error details: ${JSON.stringify(error.response.data)}`);
       }
-      
+
       if (attempt === retries) {
-        return { success: false, error: error.message };
+        throw new Error(`Failed to save to Airtable after ${retries} attempts: ${error.message}`);
       }
-      
-      // Wait before retrying (exponential backoff)
-      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+
+      const waitTime = Math.pow(2, attempt) * 1000;
+      logger.info(`⏳ Retrying in ${waitTime / 1000} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
 }
 
-module.exports = { saveToAirtable };
+/**
+ * Test Airtable connection
+ */
+async function testAirtableConnection() {
+  try {
+    const response = await axios.get(
+      `${AIRTABLE_API_URL}?maxRecords=1`,
+      {
+        headers: {
+          'Authorization': `Bearer ${AIRTABLE_API_KEY}`
+        },
+        timeout: 5000
+      }
+    );
+
+    logger.info('✅ Airtable connection test successful');
+    return true;
+
+  } catch (error) {
+    logger.error(`❌ Airtable connection test failed: ${error.message}`);
+    if (error.response) {
+      logger.error(`Error details: ${JSON.stringify(error.response.data)}`);
+    }
+    return false;
+  }
+}
+
+module.exports = {
+  saveLeadToAirtable,
+  testAirtableConnection
+};
