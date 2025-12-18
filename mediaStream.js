@@ -8,8 +8,20 @@ function setupMediaStreamWebSocket(wss) {
     let callId = null;
     let streamSid = null;
     let chunkCount = 0;
+    let keepAliveInterval = null;
     
     logger.info('📞 New WebSocket connection established');
+    
+    // Keep connection alive
+    keepAliveInterval = setInterval(() => {
+      if (ws.readyState === 1) {
+        try {
+          ws.ping();
+        } catch (err) {
+          logger.error(`Ping error: ${err.message}`);
+        }
+      }
+    }, 30000); // Ping every 30 seconds
     
     ws.on('message', (message) => {
       try {
@@ -44,6 +56,9 @@ function setupMediaStreamWebSocket(wss) {
         
         if (msg.event === 'stop') {
           logger.info(`Stream ended: ${chunkCount} total chunks`);
+          if (keepAliveInterval) {
+            clearInterval(keepAliveInterval);
+          }
         }
         
       } catch (err) {
@@ -53,13 +68,22 @@ function setupMediaStreamWebSocket(wss) {
     
     ws.on('error', (err) => {
       logger.error(`WS error: ${err.message}`);
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+      }
     });
     
     ws.on('close', () => {
       logger.info(`WebSocket closed for call: ${callId}`);
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+      }
+    });
+    
+    ws.on('pong', () => {
+      // Connection is alive
     });
   });
 }
 
 module.exports = { setupMediaStreamWebSocket };
-

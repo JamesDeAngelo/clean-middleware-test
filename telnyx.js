@@ -1,6 +1,7 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
+const { saveToAirtable } = require('./airtable');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -102,18 +103,11 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // Use both_tracks with bidirectional RTP streaming
+    // Simplified streaming config - don't use bidirectional RTP for now
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
-      enable_dialogflow: false,
-      media_format: {
-        codec: 'PCMU',
-        sample_rate: 8000,
-        channels: 1
-      }
+      enable_dialogflow: false
     };
     
     logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
@@ -129,7 +123,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started with PCMU @ 8kHz (bidirectional RTP mode)');
+    logger.info('✓ Streaming started with both_tracks mode');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -140,24 +134,50 @@ async function handleCallAnswered(callControlId, payload) {
 }
 
 async function handleStreamingStopped(callControlId) {
+  logger.info(`🔴 Streaming stopped for call: ${callControlId}`);
   const session = sessionStore.getSession(callControlId);
   
-  if (session?.ws?.readyState === 1) {
-    session.ws.close();
+  if (session) {
+    // Try to save data before cleanup
+    if (session.dataExtractor && !session.dataSaved) {
+      const leadData = session.dataExtractor.getData();
+      if (leadData.phoneNumber) {
+        logger.info('💾 Saving data on streaming stop');
+        await saveToAirtable(leadData);
+      }
+    }
+    
+    if (session.ws?.readyState === 1) {
+      session.ws.close();
+    }
+    
+    // Don't delete session immediately - let call.hangup handle it
   }
   
-  sessionStore.deleteSession(callControlId);
-  logger.info('✓ Cleanup completed');
+  logger.info('✓ Streaming stop handled');
 }
 
 async function handleCallHangup(callControlId) {
+  logger.info(`🔴 Call hangup for: ${callControlId}`);
   const session = sessionStore.getSession(callControlId);
   
-  if (session?.ws?.readyState === 1) {
-    session.ws.close();
+  if (session) {
+    // Final save attempt
+    if (session.dataExtractor && !session.dataSaved) {
+      const leadData = session.dataExtractor.getData();
+      if (leadData.phoneNumber) {
+        logger.info('💾 Final save on call hangup');
+        await saveToAirtable(leadData);
+      }
+    }
+    
+    if (session.ws?.readyState === 1) {
+      session.ws.close();
+    }
+    
+    sessionStore.deleteSession(callControlId);
   }
   
-  sessionStore.deleteSession(callControlId);
   logger.info('✓ Call ended');
 }
 

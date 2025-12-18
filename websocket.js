@@ -72,21 +72,25 @@ async function connectToOpenAI(callId, phoneNumber = '') {
               return;
             }
             
-            // Send audio DIRECTLY back to Telnyx via WebSocket
-            const audioPayload = {
-              event: 'media',
-              stream_sid: session.streamSid,
-              media: {
-                track: 'outbound',
-                payload: msg.delta
+            try {
+              // Send audio DIRECTLY back to Telnyx via WebSocket
+              const audioPayload = {
+                event: 'media',
+                stream_sid: session.streamSid,
+                media: {
+                  track: 'outbound',
+                  payload: msg.delta
+                }
+              };
+              
+              session.streamConnection.send(JSON.stringify(audioPayload));
+              audioChunksSent++;
+              
+              if (audioChunksSent % 20 === 0) {
+                logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
               }
-            };
-            
-            session.streamConnection.send(JSON.stringify(audioPayload));
-            audioChunksSent++;
-            
-            if (audioChunksSent % 20 === 0) {
-              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
+            } catch (err) {
+              logger.error(`❌ Error sending audio: ${err.message}`);
             }
           }
 
