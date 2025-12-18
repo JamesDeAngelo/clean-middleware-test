@@ -184,18 +184,21 @@ async function saveSessionDataBeforeCleanup(callControlId) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  // Just close connection, DON'T save here
+  // SAVE BEFORE CLEANUP (only if conversation complete)
+  await saveSessionDataBeforeCleanup(callControlId);
+  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
     session.ws.close();
   }
   
-  logger.info('✓ Streaming stopped');
+  sessionStore.deleteSession(callControlId);
+  logger.info('✓ Cleanup completed');
 }
 
 async function handleCallHangup(callControlId) {
-  // ONLY SAVE HERE - this event fires once per call
+  // SAVE BEFORE CLEANUP (only if conversation complete)
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
