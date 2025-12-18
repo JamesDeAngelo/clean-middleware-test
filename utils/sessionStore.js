@@ -15,7 +15,8 @@ function createSession(callId, ws) {
       assistant: []
     },
     lastAiResponseTime: null,
-    saved: false, // NEW: Prevent duplicate saves
+    saved: false,
+    conversationComplete: false, // NEW: Flag when AI says goodbye
     createdAt: new Date()
   };
   
@@ -52,7 +53,7 @@ function addUserTranscript(callId, text) {
       text,
       timestamp: new Date()
     });
-    logger.info(`👤 User said: "${text}"`);
+    logger.info(`👤 User: "${text}"`);
   }
 }
 
@@ -64,7 +65,7 @@ function addAssistantTranscript(callId, text) {
       timestamp: new Date()
     });
     session.lastAiResponseTime = Date.now();
-    logger.info(`🤖 AI said: "${text}"`);
+    logger.info(`🤖 AI: "${text}"`);
   }
 }
 
@@ -86,7 +87,7 @@ function markAsSaved(callId) {
   const session = sessions.get(callId);
   if (session) {
     session.saved = true;
-    logger.info(`✅ Session marked as saved: ${callId}`);
+    logger.info(`✅ Marked as saved: ${callId}`);
   }
 }
 
@@ -95,13 +96,19 @@ function wasSaved(callId) {
   return session ? session.saved : false;
 }
 
+function isConversationComplete(callId) {
+  const session = sessions.get(callId);
+  return session ? session.conversationComplete : false;
+}
+
 function getAllSessions() {
   return Array.from(sessions.entries()).map(([callId, session]) => ({
     callId,
     callerPhone: session.callerPhone,
     createdAt: session.createdAt,
     lastActivity: session.lastAiResponseTime,
-    saved: session.saved
+    saved: session.saved,
+    complete: session.conversationComplete
   }));
 }
 
@@ -115,5 +122,6 @@ module.exports = {
   getFullTranscript,
   markAsSaved,
   wasSaved,
+  isConversationComplete,
   getAllSessions
 };

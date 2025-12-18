@@ -73,7 +73,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 700
+        silence_duration_ms: 1200  // INCREASED - Let user finish talking (was 700)
       },
       temperature: 0.9,
       max_response_output_tokens: 2048
@@ -83,22 +83,17 @@ async function buildInitialRealtimePayload(systemPrompt) {
 
 /**
  * Extract structured data from conversation transcript
- * Uses OpenAI to parse the conversation and extract lead fields
  */
 async function extractLeadDataFromTranscript(transcript, callerPhone) {
   // Get today's date for context
   const today = new Date();
-  const todayFormatted = today.toISOString().split('T')[0]; // YYYY-MM-DD
-  const todayReadable = today.toLocaleDateString('en-US', { 
-    weekday: 'long', 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric' 
-  });
+  const todayFormatted = today.toISOString().split('T')[0];
+  const yesterdayFormatted = new Date(today.getTime() - 86400000).toISOString().split('T')[0];
+  const lastWeekFormatted = new Date(today.getTime() - 604800000).toISOString().split('T')[0];
 
-  const extractionPrompt = `You are a data extraction assistant. Today's date is ${todayReadable} (${todayFormatted}).
+  const extractionPrompt = `You are a data extraction assistant. Today's date is ${todayFormatted}.
 
-Extract the following information from this call transcript. If a field is not mentioned or unclear, return an empty string for that field.
+Extract information from this TRUCK ACCIDENT intake call transcript.
 
 Transcript:
 ${transcript}
@@ -113,21 +108,21 @@ Extract these fields in JSON format:
   "policeReportFiled": ""
 }
 
-CRITICAL DATE RULES:
-- Today is ${todayFormatted}
-- "yesterday" = ${new Date(today.getTime() - 86400000).toISOString().split('T')[0]}
-- "last week" = approximately ${new Date(today.getTime() - 604800000).toISOString().split('T')[0]}
-- "two days ago" = ${new Date(today.getTime() - 172800000).toISOString().split('T')[0]}
-- Convert ALL relative dates (yesterday, last Tuesday, etc.) to YYYY-MM-DD format based on today's date
-- If they give a full date, convert to YYYY-MM-DD
-- If unclear, leave empty
-
-Other rules:
-- locationOfAccident: City, state, or highway/road name
+CRITICAL RULES:
+- name: The CALLER'S name (like "John Smith" or "Maria Garcia"), NOT "Sarah" (that's the agent)
+- dateOfAccident: Convert to YYYY-MM-DD format
+  * "yesterday" = ${yesterdayFormatted}
+  * "last week" = ${lastWeekFormatted}
+  * "I don't know" or unclear = leave EMPTY
+- locationOfAccident: City and state, or highway/road name
 - typeOfTruck: Semi-truck, 18-wheeler, delivery truck, box truck, etc.
-- injuriesSustained: Brief description of injuries mentioned
+- injuriesSustained: What injuries they mentioned (e.g., "broken arm", "back pain", "whiplash")
 - policeReportFiled: "Yes", "No", or "Unknown"
-- If name is not mentioned, leave empty
+
+IMPORTANT:
+- Only extract the CALLER'S information, not the agent Sarah
+- If something wasn't mentioned or is unclear, leave that field EMPTY (empty string "")
+- Date must be YYYY-MM-DD format or empty
 
 Return ONLY the JSON object, no other text.`;
 
@@ -143,7 +138,7 @@ Return ONLY the JSON object, no other text.`;
         messages: [
           { role: 'user', content: extractionPrompt }
         ],
-        temperature: 0.1, // Lower temperature for more accurate date extraction
+        temperature: 0.1,
         max_tokens: 500
       })
     });
@@ -158,12 +153,11 @@ Return ONLY the JSON object, no other text.`;
     // Add phone number from caller ID
     extractedData.phoneNumber = callerPhone || "";
     
-    logger.info(`✅ Extracted lead data: ${JSON.stringify(extractedData)}`);
+    logger.info(`✅ Extracted: ${JSON.stringify(extractedData)}`);
     return extractedData;
 
   } catch (error) {
-    logger.error(`❌ Failed to extract lead data: ${error.message}`);
-    // Return minimal data with phone number
+    logger.error(`❌ Extraction failed: ${error.message}`);
     return {
       name: "",
       phoneNumber: callerPhone || "",

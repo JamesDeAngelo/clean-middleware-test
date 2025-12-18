@@ -4,16 +4,10 @@ const sessionStore = require('./utils/sessionStore');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
-  sendAudioToOpenAI,
-  extractLeadDataFromTranscript
+  sendAudioToOpenAI
 } = require('./openai');
-const { saveLeadToAirtable } = require('./airtable');
 
 const OPENAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
-
-// Timer to save after last AI response (2 seconds)
-const SAVE_DELAY_MS = 2000;
-const saveTimers = new Map();
 
 async function connectToOpenAI(callId) {
   return new Promise(async (resolve, reject) => {
@@ -45,15 +39,11 @@ async function connectToOpenAI(callId) {
         try {
           const msg = JSON.parse(data.toString());
           
-          // Handle audio from OpenAI - SEND DIRECTLY BACK TO TELNYX
+          // Handle audio from OpenAI
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
             
-            if (!session) {
-              return;
-            }
-            
-            if (!session.streamConnection || session.streamConnection.readyState !== 1) {
+            if (!session || !session.streamConnection || session.streamConnection.readyState !== 1) {
               return;
             }
             
@@ -70,20 +60,35 @@ async function connectToOpenAI(callId) {
             audioChunksSent++;
             
             if (audioChunksSent % 20 === 0) {
-              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
+              logger.info(`📤 ${audioChunksSent} chunks sent`);
             }
           }
 
-          // Track AI transcripts
+          // Track AI transcript
           if (msg.type === "response.audio_transcript.delta") {
             currentAssistantMessage += msg.delta;
           }
 
           if (msg.type === "response.audio_transcript.done") {
             if (currentAssistantMessage.trim()) {
-              sessionStore.addAssistantTranscript(callId, currentAssistantMessage.trim());
+              const message = currentAssistantMessage.trim();
+              sessionStore.addAssistantTranscript(callId, message);
+              
+              // Check if conversation is ending
+              const isEnding = message.toLowerCase().includes("take care") || 
+                              message.toLowerCase().includes("call you within") ||
+                              message.toLowerCase().includes("attorney will call");
+              
+              if (isEnding) {
+                logger.info(`🎬 Conversation ending detected`);
+                const session = sessionStore.getSession(callId);
+                if (session) {
+                  session.conversationComplete = true;
+                  sessionStore.updateSession(callId, session);
+                }
+              }
+              
               currentAssistantMessage = "";
-              resetSaveTimer(callId);
             }
           }
 
@@ -95,7 +100,7 @@ async function connectToOpenAI(callId) {
             logger.info('🔇 User stopped');
           }
 
-          // Track user transcripts
+          // Track user transcript
           if (msg.type === "conversation.item.input_audio_transcription.completed") {
             if (msg.transcript && msg.transcript.trim()) {
               sessionStore.addUserTranscript(callId, msg.transcript.trim());
@@ -103,7 +108,7 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
+            logger.info(`✓ Response complete (${audioChunksSent} chunks)`);
             audioChunksSent = 0;
           }
 
@@ -134,7 +139,6 @@ async function connectToOpenAI(callId) {
 
       ws.on('close', () => {
         logger.info('OpenAI closed');
-        // Don't save here - session might already be deleted
       });
 
     } catch (error) {
@@ -142,60 +146,6 @@ async function connectToOpenAI(callId) {
       reject(error);
     }
   });
-}
-
-function resetSaveTimer(callId) {
-  if (sessionStore.wasSaved(callId)) {
-    return;
-  }
-  
-  if (saveTimers.has(callId)) {
-    clearTimeout(saveTimers.get(callId));
-  }
-  
-  const timer = setTimeout(async () => {
-    await saveCallDataToAirtable(callId);
-    saveTimers.delete(callId);
-  }, SAVE_DELAY_MS);
-  
-  saveTimers.set(callId, timer);
-  logger.info(`⏱️ Save timer reset (will save in ${SAVE_DELAY_MS}ms)`);
-}
-
-async function saveCallDataToAirtable(callId) {
-  try {
-    if (sessionStore.wasSaved(callId)) {
-      logger.warn(`⚠️ Already saved ${callId}`);
-      return;
-    }
-    
-    const session = sessionStore.getSession(callId);
-    
-    if (!session) {
-      logger.error(`❌ No session found for ${callId}`);
-      return;
-    }
-    
-    const transcript = sessionStore.getFullTranscript(callId);
-    
-    if (!transcript || transcript.trim().length === 0) {
-      logger.warn(`⚠️ No transcript for ${callId}`);
-      return;
-    }
-    
-    logger.info(`📋 Extracting data from transcript...`);
-    
-    const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
-    
-    await saveLeadToAirtable(leadData);
-    
-    sessionStore.markAsSaved(callId);
-    
-    logger.info(`✅ Saved to Airtable successfully!`);
-    
-  } catch (error) {
-    logger.error(`❌ Failed to save: ${error.message}`);
-  }
 }
 
 function triggerGreeting(ws) {

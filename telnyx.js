@@ -145,6 +145,12 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
+    // Check if conversation completed naturally (AI said goodbye)
+    if (!sessionStore.isConversationComplete(callControlId)) {
+      logger.warn(`⚠️ Conversation incomplete - caller hung up early. Not saving.`);
+      return;
+    }
+    
     const transcript = sessionStore.getFullTranscript(callControlId);
     
     if (!transcript || transcript.trim().length === 0) {
@@ -152,7 +158,17 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    logger.info(`💾 Saving call data...`);
+    // Check if we have enough data (at least name mentioned)
+    const hasName = transcript.toLowerCase().includes("name") || 
+                   transcript.match(/my name is|i'm |i am /i);
+    
+    if (!hasName) {
+      logger.warn(`⚠️ No name captured - likely incomplete call`);
+      return;
+    }
+    
+    logger.info(`💾 Saving complete call data...`);
+    logger.info(`📋 Transcript:\n${transcript}`);
     
     const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
     
@@ -160,7 +176,7 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     
     sessionStore.markAsSaved(callControlId);
     
-    logger.info(`✅ Saved successfully!`);
+    logger.info(`✅ SAVED TO AIRTABLE!`);
     
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
@@ -168,7 +184,7 @@ async function saveSessionDataBeforeCleanup(callControlId) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  // SAVE BEFORE CLEANUP
+  // SAVE BEFORE CLEANUP (only if conversation complete)
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
@@ -182,7 +198,7 @@ async function handleStreamingStopped(callControlId) {
 }
 
 async function handleCallHangup(callControlId) {
-  // SAVE BEFORE CLEANUP
+  // SAVE BEFORE CLEANUP (only if conversation complete)
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
