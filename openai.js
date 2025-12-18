@@ -54,17 +54,7 @@ NEVER:
 - Give legal advice or case evaluations
 - Promise outcomes
 - Let them control the conversation flow - YOU lead
-- Use overly formal language
-
-IMPORTANT - DATA COLLECTION:
-As you talk, mentally note these fields:
-- Name
-- Phone Number (you'll get this from caller ID)
-- Date of Accident
-- Location of Accident
-- Type of Truck
-- Injuries Sustained
-- Police Report Filed (Yes/No)`;
+- Use overly formal language`;
 }
 
 async function buildInitialRealtimePayload(systemPrompt) {
@@ -96,7 +86,19 @@ async function buildInitialRealtimePayload(systemPrompt) {
  * Uses OpenAI to parse the conversation and extract lead fields
  */
 async function extractLeadDataFromTranscript(transcript, callerPhone) {
-  const extractionPrompt = `You are a data extraction assistant. Extract the following information from this call transcript. If a field is not mentioned or unclear, return an empty string for that field.
+  // Get today's date for context
+  const today = new Date();
+  const todayFormatted = today.toISOString().split('T')[0]; // YYYY-MM-DD
+  const todayReadable = today.toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+
+  const extractionPrompt = `You are a data extraction assistant. Today's date is ${todayReadable} (${todayFormatted}).
+
+Extract the following information from this call transcript. If a field is not mentioned or unclear, return an empty string for that field.
 
 Transcript:
 ${transcript}
@@ -111,10 +113,18 @@ Extract these fields in JSON format:
   "policeReportFiled": ""
 }
 
-Rules:
-- dateOfAccident: Format as YYYY-MM-DD if possible. If they say "last Tuesday" or relative dates, estimate based on today's date.
+CRITICAL DATE RULES:
+- Today is ${todayFormatted}
+- "yesterday" = ${new Date(today.getTime() - 86400000).toISOString().split('T')[0]}
+- "last week" = approximately ${new Date(today.getTime() - 604800000).toISOString().split('T')[0]}
+- "two days ago" = ${new Date(today.getTime() - 172800000).toISOString().split('T')[0]}
+- Convert ALL relative dates (yesterday, last Tuesday, etc.) to YYYY-MM-DD format based on today's date
+- If they give a full date, convert to YYYY-MM-DD
+- If unclear, leave empty
+
+Other rules:
 - locationOfAccident: City, state, or highway/road name
-- typeOfTruck: Semi-truck, 18-wheeler, delivery truck, etc.
+- typeOfTruck: Semi-truck, 18-wheeler, delivery truck, box truck, etc.
 - injuriesSustained: Brief description of injuries mentioned
 - policeReportFiled: "Yes", "No", or "Unknown"
 - If name is not mentioned, leave empty
@@ -133,7 +143,7 @@ Return ONLY the JSON object, no other text.`;
         messages: [
           { role: 'user', content: extractionPrompt }
         ],
-        temperature: 0.3,
+        temperature: 0.1, // Lower temperature for more accurate date extraction
         max_tokens: 500
       })
     });

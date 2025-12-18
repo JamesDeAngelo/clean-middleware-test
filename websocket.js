@@ -145,7 +145,7 @@ async function connectToOpenAI(callId) {
 
       ws.on('close', () => {
         logger.info('OpenAI closed');
-        // Trigger immediate save when connection closes
+        // Trigger immediate save when connection closes (if not already saved)
         triggerImmediateSave(callId);
       });
 
@@ -157,6 +157,12 @@ async function connectToOpenAI(callId) {
 }
 
 function resetSaveTimer(callId) {
+  // Check if already saved
+  if (sessionStore.wasSaved(callId)) {
+    logger.info(`⏭️ Already saved ${callId}, skipping timer reset`);
+    return;
+  }
+  
   // Clear existing timer if any
   if (saveTimers.has(callId)) {
     clearTimeout(saveTimers.get(callId));
@@ -173,6 +179,12 @@ function resetSaveTimer(callId) {
 }
 
 function triggerImmediateSave(callId) {
+  // Check if already saved
+  if (sessionStore.wasSaved(callId)) {
+    logger.info(`⏭️ Already saved ${callId}, skipping immediate save`);
+    return;
+  }
+  
   // Clear any pending timer
   if (saveTimers.has(callId)) {
     clearTimeout(saveTimers.get(callId));
@@ -186,6 +198,12 @@ function triggerImmediateSave(callId) {
 
 async function saveCallDataToAirtable(callId) {
   try {
+    // Double-check we haven't saved already
+    if (sessionStore.wasSaved(callId)) {
+      logger.warn(`⚠️ Duplicate save prevented for ${callId}`);
+      return;
+    }
+    
     const session = sessionStore.getSession(callId);
     
     if (!session) {
@@ -201,7 +219,7 @@ async function saveCallDataToAirtable(callId) {
       return;
     }
     
-    logger.info(`📋 Full transcript:\n${transcript}`);
+    logger.info(`📋 Full transcript for ${callId}:\n${transcript}`);
     
     // Extract structured data from transcript
     const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
@@ -209,7 +227,10 @@ async function saveCallDataToAirtable(callId) {
     // Save to Airtable
     await saveLeadToAirtable(leadData);
     
-    logger.info(`✅ Call data saved successfully for ${callId}`);
+    // Mark as saved to prevent duplicates
+    sessionStore.markAsSaved(callId);
+    
+    logger.info(`✅ Call data saved successfully for ${callId} - WILL NOT SAVE AGAIN`);
     
   } catch (error) {
     logger.error(`❌ Failed to save call data: ${error.message}`);
