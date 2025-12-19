@@ -14,12 +14,10 @@ async function saveLeadToAirtable(leadData, retries = 3) {
   const fields = {
     "Name": leadData.name || "",
     "Phone Number": leadData.phoneNumber || "",
-    "Accident Location": leadData.accidentLocation || "",
+    "Location of Accident": leadData.locationOfAccident || "",
+    "Type of Truck": leadData.typeOfTruck || "",
     "Injuries Sustained": leadData.injuriesSustained || "",
-    "Police Report Filed": leadData.policeReportFiled || "",
-    "Are You the Injured Person?": leadData.areYouTheInjuredPerson || "",
-    "Was a Commercial Truck Involved?": leadData.wasCommercialTruckInvolved || "",
-    "Were You Treated by a Doctor or Hospital?": leadData.wereTreatedByDoctorOrHospital || ""
+    "Police Report Filed": leadData.policeReportFiled || ""
   };
 
   // CRITICAL FIX: Only add Date of Accident if it has a value
