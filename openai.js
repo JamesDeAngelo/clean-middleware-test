@@ -5,10 +5,7 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 async function buildSystemPrompt() {
-  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner. BEGIN THE CALL WITH EXACTLY THIS LINE, VERBATIM:
-"Hi, this is Sarah from the law office. How can I help you?"
-DO NOT start with anything else. Do NOT say "What happened?" or any variant.
-Wait for the caller to respond before asking any other question.
+  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner.
 
 YOUR GOALS:
 - Lead every conversation confidently from start to finish
