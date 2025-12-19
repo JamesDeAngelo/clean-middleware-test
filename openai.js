@@ -102,10 +102,12 @@ Extract these fields in JSON format:
 {
   "name": "",
   "dateOfAccident": "",
-  "locationOfAccident": "",
-  "typeOfTruck": "",
+  "accidentLocation": "",
   "injuriesSustained": "",
-  "policeReportFiled": ""
+  "policeReportFiled": "",
+  "areYouTheInjuredPerson": "",
+  "wasCommercialTruckInvolved": "",
+  "wereTreatedByDoctorOrHospital": ""
 }
 
 CRITICAL RULES:
@@ -114,15 +116,18 @@ CRITICAL RULES:
   * "yesterday" = ${yesterdayFormatted}
   * "last week" = ${lastWeekFormatted}
   * "I don't know" or unclear = leave EMPTY
-- locationOfAccident: City and state, or highway/road name
-- typeOfTruck: Semi-truck, 18-wheeler, delivery truck, box truck, etc.
+- accidentLocation: City and state, or highway/road name
 - injuriesSustained: What injuries they mentioned (e.g., "broken arm", "back pain", "whiplash")
 - policeReportFiled: "Yes", "No", or "Unknown"
+- areYouTheInjuredPerson: "Yes" if they were hurt, "No" if calling on behalf of someone else
+- wasCommercialTruckInvolved: "Yes" if 18-wheeler/semi-truck/commercial truck mentioned, "No" if passenger vehicle
+- wereTreatedByDoctorOrHospital: "Yes" if they saw doctor/went to hospital/ER, "No" if they didn't seek medical care
 
 IMPORTANT:
 - Only extract the CALLER'S information, not the agent Sarah
 - If something wasn't mentioned or is unclear, leave that field EMPTY (empty string "")
 - Date must be YYYY-MM-DD format or empty
+- For Yes/No fields, use exactly "Yes" or "No" (not "yes", "YES", etc.)
 
 Return ONLY the JSON object, no other text.`;
 
@@ -162,10 +167,12 @@ Return ONLY the JSON object, no other text.`;
       name: "",
       phoneNumber: callerPhone || "",
       dateOfAccident: "",
-      locationOfAccident: "",
-      typeOfTruck: "",
+      accidentLocation: "",
       injuriesSustained: "",
-      policeReportFiled: ""
+      policeReportFiled: "",
+      areYouTheInjuredPerson: "",
+      wasCommercialTruckInvolved: "",
+      wereTreatedByDoctorOrHospital: ""
     };
   }
 }
