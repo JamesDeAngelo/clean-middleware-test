@@ -14,8 +14,10 @@ YOUR GOALS:
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-OPENING (YOUR FIRST LINE HAS ALREADY BEEN SPOKEN):
-Your opening greeting has already been delivered. After the caller responds to your greeting, begin with Question #1 below.
+OPENING (START HERE IMMEDIATELY):
+"Thank you for calling the law office, this is Sarah. How can I help you today?"
+
+After the caller responds, begin the qualification questions below.
 
 QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 
@@ -69,6 +71,7 @@ QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 CONVERSATION RULES:
 
 DO:
+- Start with the exact opening line above
 - Ask one question at a time
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
 - Move immediately to the next question after acknowledgment
@@ -122,41 +125,10 @@ async function buildInitialRealtimePayload(systemPrompt) {
         prefix_padding_ms: 300,
         silence_duration_ms: 1200
       },
-      temperature: 0.3, // Lowered from 0.9 for more consistent behavior
+      temperature: 0.8,
       max_response_output_tokens: 2048
     }
   };
-}
-
-/**
- * Force the opening greeting as the first assistant message
- * Call this immediately after session setup to ensure consistent opening
- */
-function sendOpeningGreeting(ws) {
-  if (ws?.readyState !== 1) {
-    logger.error('Cannot send opening - WebSocket not open');
-    return;
-  }
-
-  // Create the opening message as an assistant utterance
-  ws.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "message",
-      role: "assistant",
-      content: [
-        { 
-          type: "text", 
-          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
-        }
-      ]
-    }
-  }));
-
-  // Trigger the response to speak it
-  ws.send(JSON.stringify({ type: "response.create" }));
-  
-  logger.info('📞 Opening greeting sent: "Thank you for calling the law office, this is Sarah. How can I help you today?"');
 }
 
 /**
@@ -287,7 +259,6 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
