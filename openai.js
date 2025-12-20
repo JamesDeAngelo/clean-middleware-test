@@ -14,11 +14,7 @@ YOUR GOALS:
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-OPENING:
-Say ONLY this line, then STOP and WAIT for the caller to respond:
-"Thank you for calling the law office, this is Sarah. How can I help you today?"
-
-CRITICAL: After saying the opening, you MUST STOP TALKING and wait for the caller to speak first. Do not continue to the questions until the caller has responded.
+IMPORTANT: Your opening greeting has already been delivered. The caller is now responding to your question "How can I help you today?"
 
 TRANSITION (After caller explains their situation):
 Acknowledge briefly with empathy, then transition to questions:
@@ -78,8 +74,7 @@ QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 CONVERSATION RULES:
 
 DO:
-- Say the opening line, then STOP and WAIT for the caller to speak
-- After caller responds, give brief empathetic acknowledgment before starting questions
+- After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
 - WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
@@ -87,15 +82,14 @@ DO:
 - Show empathy only when discussing injuries: "I'm sorry to hear that."
 - Sound natural and conversational, not scripted
 - Use occasional filler words: "And...", "So...", "Alright..."
-- Lead the conversation - never wait for them to volunteer info (except at the very beginning)
+- Lead the conversation - never wait for them to volunteer info
 
 DON'T:
-- Continue talking after the opening - you MUST wait for caller to respond first
-- Launch into questions immediately without letting caller speak
+- Repeat your opening greeting (it's already been said)
 - Ask follow-up questions beyond the required list
 - Give legal advice or case evaluations
 - Promise outcomes or settlements
-- Let the caller control the conversation flow (after the opening)
+- Let the caller control the conversation flow
 - Repeat questions if you already got an answer
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
@@ -140,6 +134,44 @@ async function buildInitialRealtimePayload(systemPrompt) {
       max_response_output_tokens: 2048
     }
   };
+}
+
+/**
+ * Send the opening greeting immediately after session is configured
+ * This ensures the exact greeting is used every time
+ * 
+ * IMPORTANT: Call this ONLY after receiving 'session.updated' event from OpenAI
+ */
+function sendOpeningGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send opening - WebSocket not open');
+    return;
+  }
+
+  // First, create the assistant's opening message in the conversation history
+  ws.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "assistant",
+      content: [
+        { 
+          type: "text", 
+          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
+        }
+      ]
+    }
+  }));
+
+  // Then immediately trigger the response to speak it
+  ws.send(JSON.stringify({ 
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"]
+    }
+  }));
+  
+  logger.info('📞 Opening greeting sent to OpenAI');
 }
 
 /**
@@ -270,6 +302,7 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
+  sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
