@@ -126,42 +126,45 @@ async function buildInitialRealtimePayload(systemPrompt) {
         silence_duration_ms: 1200
       },
       temperature: 0.8,
-      max_response_output_tokens: 2048,
-      // PRE-LOAD THE CONVERSATION WITH THE GREETING ALREADY SAID
-      conversation: {
-        messages: [
-          {
-            role: "assistant",
-            content: [
-              {
-                type: "text",
-                text: "Thank you for calling the law office, this is Sarah. How can I help you today?"
-              }
-            ]
-          }
-        ]
-      }
+      max_response_output_tokens: 2048
     }
   };
 }
 
 /**
- * Trigger the pre-loaded greeting to be spoken
+ * Send the greeting as a conversation item, then trigger audio
  * Call this after session.updated event
  */
-function triggerOpeningGreeting(ws) {
+function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
-    logger.error('Cannot trigger greeting - WebSocket not open');
+    logger.error('Cannot send greeting - WebSocket not open');
     return;
   }
 
-  // The greeting is already in conversation history
-  // Just trigger a response to speak it
-  ws.send(JSON.stringify({ 
-    type: "response.create"
+  // Step 1: Add the greeting to conversation history as an assistant message
+  ws.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "assistant",
+      content: [
+        { 
+          type: "input_text", 
+          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
+        }
+      ]
+    }
   }));
-  
-  logger.info('📞 Triggering pre-loaded greeting');
+
+  // Step 2: Trigger TTS/audio generation with explicit modalities
+  ws.send(JSON.stringify({
+    type: "response.create",
+    response: { 
+      modalities: ["text", "audio"] 
+    }
+  }));
+
+  logger.info('📞 Opening greeting sent and triggered');
 }
 
 /**
@@ -292,7 +295,7 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
-  triggerOpeningGreeting,
+  sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
