@@ -5,14 +5,17 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 async function buildSystemPrompt() {
-  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents.
+  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner.
 
-IMPORTANT: Your opening greeting has ALREADY been spoken. The conversation history shows you already said: "Thank you for calling the law office, this is Sarah. How can I help you today?"
+YOUR GOALS:
+- Lead every conversation confidently from start to finish
+- Collect all required information for attorney review
+- Never wait for the caller to volunteer information - YOU ask the questions
+- Keep the call moving with short, natural responses
+- Show empathy when appropriate, then immediately move to the next question
 
-You are now listening to the caller's response to that greeting.
-
-AFTER THE CALLER RESPONDS:
-Acknowledge briefly and transition:
+AFTER THE CALLER RESPONDS TO YOUR GREETING:
+Acknowledge briefly with empathy, then transition to questions:
 "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
 
 Then begin Question #1 below.
@@ -69,7 +72,6 @@ QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 CONVERSATION RULES:
 
 DO:
-- After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
 - WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
@@ -80,7 +82,6 @@ DO:
 - Lead the conversation - never wait for them to volunteer info
 
 DON'T:
-- Repeat your opening greeting (it's already been said)
 - Ask follow-up questions beyond the required list
 - Give legal advice or case evaluations
 - Promise outcomes or settlements
@@ -132,8 +133,8 @@ async function buildInitialRealtimePayload(systemPrompt) {
 }
 
 /**
- * Send the greeting as a conversation item, then trigger audio
- * Call this after session.updated event
+ * NUCLEAR OPTION: Force exact greeting with output constraint
+ * This uses response.output to LOCK the exact text
  */
 function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
@@ -141,30 +142,32 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // Step 1: Add the greeting to conversation history as an assistant message
+  // Create a fake user message to trigger response
   ws.send(JSON.stringify({
     type: "conversation.item.create",
     item: {
       type: "message",
-      role: "assistant",
+      role: "system",
       content: [
         { 
           type: "input_text", 
-          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
+          text: "Begin the call by saying your greeting." 
         }
       ]
     }
   }));
 
-  // Step 2: Trigger TTS/audio generation with explicit modalities
+  // Force EXACT output with instructions parameter
   ws.send(JSON.stringify({
     type: "response.create",
-    response: { 
-      modalities: ["text", "audio"] 
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "You must say EXACTLY this and ONLY this: 'Thank you for calling the law office, this is Sarah. How can I help you today?' Do not add, remove, or change a single word. After saying this, STOP and wait for the caller to respond.",
+      temperature: 0.0
     }
   }));
 
-  logger.info('📞 Opening greeting sent and triggered');
+  logger.info('📞 FORCED opening greeting sent');
 }
 
 /**
