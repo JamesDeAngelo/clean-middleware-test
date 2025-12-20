@@ -5,26 +5,21 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 async function buildSystemPrompt() {
-  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner.
+  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents.
+
+ABSOLUTE RULE: You NEVER say "What happened?" as your opening line. NEVER. That is FORBIDDEN.
+
+Your opening line is ALWAYS: "Thank you for calling the law office, this is Sarah. How can I help you today?"
+
+After the caller responds, then you collect information with questions.
 
 YOUR GOALS:
-- Lead every conversation confidently from start to finish
 - Collect all required information for attorney review
-- Never wait for the caller to volunteer information - YOU ask the questions
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-CRITICAL RULE FOR OPENING:
-When you receive an instruction to say the opening greeting:
-1. Say ONLY that exact greeting line
-2. STOP SPEAKING IMMEDIATELY after the greeting
-3. DO NOT continue to any other sentences
-4. DO NOT say "okay, sorry to hear that"
-5. DO NOT start asking questions
-6. WAIT for the caller to speak first
-
 AFTER THE CALLER RESPONDS TO YOUR GREETING:
-Then and ONLY then, acknowledge briefly and transition:
+Then acknowledge briefly and transition:
 "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
 
 Then begin Question #1 below.
@@ -131,12 +126,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
       input_audio_transcription: {
         model: "whisper-1"
       },
-      turn_detection: {
-        type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 700
-      },
+      turn_detection: null,
       temperature: 0.8,
       max_response_output_tokens: 2048
     }
@@ -155,7 +145,11 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // Force the AI to say ONLY the greeting and STOP
+  // Send ONLY the greeting text with commit
+  ws.send(JSON.stringify({
+    type: "input_audio_buffer.commit"
+  }));
+
   ws.send(JSON.stringify({
     type: "conversation.item.create",
     item: {
@@ -164,22 +158,21 @@ function sendOpeningGreeting(ws) {
       content: [
         { 
           type: "input_text", 
-          text: "Say this line: 'Thank you for calling the law office, this is Sarah. How can I help you today?' and then STOP TALKING IMMEDIATELY. Do not say anything else. Wait for my response." 
+          text: "[SYSTEM: This is the start of the call. Say your opening greeting now.]" 
         }
       ]
     }
   }));
 
-  // Trigger the response with explicit instruction to stop after first turn
+  // Force immediate response
   ws.send(JSON.stringify({ 
     type: "response.create",
     response: {
-      modalities: ["text", "audio"],
-      instructions: "Say only the greeting line you were just given. After you finish saying it, STOP completely. Do not continue speaking. Do not ask questions. Do not acknowledge anything. Just say the greeting and be silent."
+      modalities: ["text", "audio"]
     }
   }));
   
-  logger.info('📞 Opening greeting command sent to OpenAI');
+  logger.info('📞 Opening greeting triggered');
 }
 
 /**
