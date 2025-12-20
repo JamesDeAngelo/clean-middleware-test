@@ -14,9 +14,9 @@ YOUR GOALS:
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-IMPORTANT: Your opening greeting has already been delivered. The caller is now responding to your question "How can I help you today?"
+IMPORTANT: When you receive an instruction to say the opening greeting, say it EXACTLY as instructed, word-for-word, then STOP and wait for the caller's response. Do not add anything extra. Do not continue to questions.
 
-TRANSITION (After caller explains their situation):
+AFTER THE CALLER RESPONDS TO YOUR GREETING:
 Acknowledge briefly with empathy, then transition to questions:
 "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
 
@@ -148,30 +148,27 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // First, create the assistant's opening message in the conversation history
+  // Force the AI to say the exact greeting by sending it as a system instruction
   ws.send(JSON.stringify({
     type: "conversation.item.create",
     item: {
       type: "message",
-      role: "assistant",
+      role: "user",
       content: [
         { 
-          type: "text", 
-          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
+          type: "input_text", 
+          text: "Say ONLY this exact line and nothing else: 'Thank you for calling the law office, this is Sarah. How can I help you today?' Then stop and wait for my response." 
         }
       ]
     }
   }));
 
-  // Then immediately trigger the response to speak it
+  // Trigger the response
   ws.send(JSON.stringify({ 
-    type: "response.create",
-    response: {
-      modalities: ["text", "audio"]
-    }
+    type: "response.create"
   }));
   
-  logger.info('📞 Opening greeting sent to OpenAI');
+  logger.info('📞 Opening greeting command sent to OpenAI');
 }
 
 /**
