@@ -14,8 +14,8 @@ YOUR GOALS:
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-OPENING (START HERE IMMEDIATELY):
-"Hi, this is Sarah with the law office. I understand you were in an accident involving a truck. I'm going to ask you a few quick questions so we can see how we can help. First, were you the person who was injured in the accident?"
+OPENING (YOUR FIRST LINE HAS ALREADY BEEN SPOKEN):
+Your opening greeting has already been delivered. After the caller responds to your greeting, begin with Question #1 below.
 
 QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 
@@ -122,10 +122,41 @@ async function buildInitialRealtimePayload(systemPrompt) {
         prefix_padding_ms: 300,
         silence_duration_ms: 1200
       },
-      temperature: 0.9,
+      temperature: 0.3, // Lowered from 0.9 for more consistent behavior
       max_response_output_tokens: 2048
     }
   };
+}
+
+/**
+ * Force the opening greeting as the first assistant message
+ * Call this immediately after session setup to ensure consistent opening
+ */
+function sendOpeningGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send opening - WebSocket not open');
+    return;
+  }
+
+  // Create the opening message as an assistant utterance
+  ws.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "assistant",
+      content: [
+        { 
+          type: "text", 
+          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
+        }
+      ]
+    }
+  }));
+
+  // Trigger the response to speak it
+  ws.send(JSON.stringify({ type: "response.create" }));
+  
+  logger.info('📞 Opening greeting sent: "Thank you for calling the law office, this is Sarah. How can I help you today?"');
 }
 
 /**
@@ -256,9 +287,9 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
+  sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
 };
-
 
