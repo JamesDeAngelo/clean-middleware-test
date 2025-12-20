@@ -7,19 +7,12 @@ if (!process.env.OPENAI_API_KEY) {
 async function buildSystemPrompt() {
   return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents.
 
-ABSOLUTE RULE: You NEVER say "What happened?" as your opening line. NEVER. That is FORBIDDEN.
+IMPORTANT: Your opening greeting has ALREADY been spoken. The conversation history shows you already said: "Thank you for calling the law office, this is Sarah. How can I help you today?"
 
-Your opening line is ALWAYS: "Thank you for calling the law office, this is Sarah. How can I help you today?"
+You are now listening to the caller's response to that greeting.
 
-After the caller responds, then you collect information with questions.
-
-YOUR GOALS:
-- Collect all required information for attorney review
-- Keep the call moving with short, natural responses
-- Show empathy when appropriate, then immediately move to the next question
-
-AFTER THE CALLER RESPONDS TO YOUR GREETING:
-Then acknowledge briefly and transition:
+AFTER THE CALLER RESPONDS:
+Acknowledge briefly and transition:
 "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
 
 Then begin Question #1 below.
@@ -126,53 +119,49 @@ async function buildInitialRealtimePayload(systemPrompt) {
       input_audio_transcription: {
         model: "whisper-1"
       },
-      turn_detection: null,
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 1200
+      },
       temperature: 0.8,
-      max_response_output_tokens: 2048
+      max_response_output_tokens: 2048,
+      // PRE-LOAD THE CONVERSATION WITH THE GREETING ALREADY SAID
+      conversation: {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Thank you for calling the law office, this is Sarah. How can I help you today?"
+              }
+            ]
+          }
+        ]
+      }
     }
   };
 }
 
 /**
- * Send the opening greeting immediately after session is configured
- * This ensures the exact greeting is used every time
- * 
- * IMPORTANT: Call this ONLY after receiving 'session.updated' event from OpenAI
+ * Trigger the pre-loaded greeting to be spoken
+ * Call this after session.updated event
  */
-function sendOpeningGreeting(ws) {
+function triggerOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
-    logger.error('Cannot send opening - WebSocket not open');
+    logger.error('Cannot trigger greeting - WebSocket not open');
     return;
   }
 
-  // Send ONLY the greeting text with commit
-  ws.send(JSON.stringify({
-    type: "input_audio_buffer.commit"
-  }));
-
-  ws.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "message",
-      role: "user",
-      content: [
-        { 
-          type: "input_text", 
-          text: "[SYSTEM: This is the start of the call. Say your opening greeting now.]" 
-        }
-      ]
-    }
-  }));
-
-  // Force immediate response
+  // The greeting is already in conversation history
+  // Just trigger a response to speak it
   ws.send(JSON.stringify({ 
-    type: "response.create",
-    response: {
-      modalities: ["text", "audio"]
-    }
+    type: "response.create"
   }));
   
-  logger.info('📞 Opening greeting triggered');
+  logger.info('📞 Triggering pre-loaded greeting');
 }
 
 /**
@@ -303,7 +292,7 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
+  triggerOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
