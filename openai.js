@@ -14,10 +14,17 @@ YOUR GOALS:
 - Keep the call moving with short, natural responses
 - Show empathy when appropriate, then immediately move to the next question
 
-IMPORTANT: When you receive an instruction to say the opening greeting, say it EXACTLY as instructed, word-for-word, then STOP and wait for the caller's response. Do not add anything extra. Do not continue to questions.
+CRITICAL RULE FOR OPENING:
+When you receive an instruction to say the opening greeting:
+1. Say ONLY that exact greeting line
+2. STOP SPEAKING IMMEDIATELY after the greeting
+3. DO NOT continue to any other sentences
+4. DO NOT say "okay, sorry to hear that"
+5. DO NOT start asking questions
+6. WAIT for the caller to speak first
 
 AFTER THE CALLER RESPONDS TO YOUR GREETING:
-Acknowledge briefly with empathy, then transition to questions:
+Then and ONLY then, acknowledge briefly and transition:
 "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
 
 Then begin Question #1 below.
@@ -128,7 +135,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 1200
+        silence_duration_ms: 700
       },
       temperature: 0.8,
       max_response_output_tokens: 2048
@@ -148,7 +155,7 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // Force the AI to say the exact greeting by sending it as a system instruction
+  // Force the AI to say ONLY the greeting and STOP
   ws.send(JSON.stringify({
     type: "conversation.item.create",
     item: {
@@ -157,15 +164,19 @@ function sendOpeningGreeting(ws) {
       content: [
         { 
           type: "input_text", 
-          text: "Say ONLY this exact line and nothing else: 'Thank you for calling the law office, this is Sarah. How can I help you today?' Then stop and wait for my response." 
+          text: "Say this line: 'Thank you for calling the law office, this is Sarah. How can I help you today?' and then STOP TALKING IMMEDIATELY. Do not say anything else. Wait for my response." 
         }
       ]
     }
   }));
 
-  // Trigger the response
+  // Trigger the response with explicit instruction to stop after first turn
   ws.send(JSON.stringify({ 
-    type: "response.create"
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "Say only the greeting line you were just given. After you finish saying it, STOP completely. Do not continue speaking. Do not ask questions. Do not acknowledge anything. Just say the greeting and be silent."
+    }
   }));
   
   logger.info('📞 Opening greeting command sent to OpenAI');
