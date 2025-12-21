@@ -4,7 +4,6 @@ const sessionStore = require('./utils/sessionStore');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendAudioToOpenAI
 } = require('./openai');
 
@@ -22,6 +21,7 @@ async function connectToOpenAI(callId) {
 
       let audioChunksSent = 0;
       let currentAssistantMessage = "";
+      let questionsAsked = 0; // CRITICAL: Track how many questions have been asked
 
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
@@ -75,16 +75,47 @@ async function connectToOpenAI(callId) {
               const message = currentAssistantMessage.trim();
               sessionStore.addAssistantTranscript(callId, message);
               
+              // CRITICAL: Count questions asked by checking for question marks or key phrases
+              const lowerMessage = message.toLowerCase();
+              if (lowerMessage.includes('?') || 
+                  lowerMessage.includes('were you the person') ||
+                  lowerMessage.includes('commercial truck') ||
+                  lowerMessage.includes('see a doctor') ||
+                  lowerMessage.includes('go to the hospital') ||
+                  lowerMessage.includes('when did') ||
+                  lowerMessage.includes('where did') ||
+                  lowerMessage.includes('what injuries') ||
+                  lowerMessage.includes('police') ||
+                  lowerMessage.includes('your name') ||
+                  lowerMessage.includes('what happened') ||
+                  lowerMessage.includes('how can i help') ||
+                  lowerMessage.includes('phone number') ||
+                  lowerMessage.includes('number to reach')) {
+                questionsAsked++;
+                logger.info(`📊 Questions asked so far: ${questionsAsked}/10`);
+              }
+              
               // Check if conversation is ending
               const isEnding = message.toLowerCase().includes("take care") || 
                               message.toLowerCase().includes("call you within") ||
                               message.toLowerCase().includes("attorney will call");
               
               if (isEnding) {
-                logger.info(`🎬 Conversation ending detected`);
+                logger.info(`🎬 Conversation ending detected - marking complete`);
                 const session = sessionStore.getSession(callId);
                 if (session) {
                   session.conversationComplete = true;
+                  sessionStore.updateSession(callId, session);
+                }
+              }
+              
+              // CRITICAL FALLBACK: If at least 3 questions were asked, consider it substantial enough to save
+              // Lowered from 6 to 3 to capture early hangups
+              if (questionsAsked >= 3) {
+                logger.info(`✅ Substantial conversation (${questionsAsked} questions) - will save if call ends`);
+                const session = sessionStore.getSession(callId);
+                if (session) {
+                  session.conversationSubstantial = true;
                   sessionStore.updateSession(callId, session);
                 }
               }
@@ -117,10 +148,17 @@ async function connectToOpenAI(callId) {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
-          if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - triggering greeting');
+          if (msg.type === "session.created") {
+            logger.info('✓ OpenAI session ready');
             setTimeout(() => {
-              sendOpeningGreeting(ws);
+              triggerGreeting(ws);
+            }, 500);
+          }
+          
+          if (msg.type === "session.updated") {
+            logger.info(`✓ Session configured - triggering greeting`);
+            setTimeout(() => {
+              triggerGreeting(ws);
             }, 500);
           }
 
@@ -143,6 +181,22 @@ async function connectToOpenAI(callId) {
       reject(error);
     }
   });
+}
+
+function triggerGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    return;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "Say your greeting: Thank you for calling the law office, this is Sarah. How can I help you today?"
+    }
+  }));
+  
+  logger.info('📞 Triggering opening greeting');
 }
 
 function attachTelnyxStream(callId, telnyxWs, streamSid) {
