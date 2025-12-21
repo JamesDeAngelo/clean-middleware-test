@@ -7,7 +7,10 @@ if (!process.env.OPENAI_API_KEY) {
 async function buildSystemPrompt() {
   return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents.
 
-Your opening greeting is: "Thank you for calling the law office, this is Sarah. How can I help you today?"
+IMPORTANT: Start every new call by greeting the caller with:
+"Thank you for calling the law office, this is Sarah. How can I help you today?"
+
+Then WAIT for their response. DO NOT continue until they speak.
 
 AFTER THE CALLER RESPONDS:
 Acknowledge briefly and transition:
@@ -76,6 +79,7 @@ DO:
 - Sound natural and conversational, not scripted
 - Use occasional filler words: "And...", "So...", "Alright..."
 - Lead the conversation - never wait for them to volunteer info
+- ALWAYS wait for the user to finish speaking before responding
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -85,6 +89,7 @@ DON'T:
 - Repeat questions if you already got an answer
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
+- Continue talking without waiting for user response
 
 IF CALLER RAMBLES:
 - Let them finish their sentence
@@ -120,7 +125,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 1200
+        silence_duration_ms: 1500  // Increased from 1200 to give user more time
       },
       temperature: 0.8,
       max_response_output_tokens: 2048
@@ -129,7 +134,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
 }
 
 /**
- * Send the greeting as a conversation item, then trigger audio
+ * Trigger the AI to give its opening greeting naturally
  * Call this after session.updated event
  */
 function sendOpeningGreeting(ws) {
@@ -138,30 +143,15 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // Step 1: Add the greeting to conversation history as an assistant message
-  ws.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "message",
-      role: "assistant",
-      content: [
-        { 
-          type: "input_text", 
-          text: "Thank you for calling the law office, this is Sarah. How can I help you today?" 
-        }
-      ]
-    }
-  }));
-
-  // Step 2: Trigger TTS/audio generation with explicit modalities
+  // Just trigger a response - let the AI naturally say its greeting from the system prompt
   ws.send(JSON.stringify({
     type: "response.create",
     response: { 
-      modalities: ["text", "audio"] 
+      modalities: ["text", "audio"]
     }
   }));
 
-  logger.info('📞 Opening greeting sent and triggered');
+  logger.info('📞 Triggering opening greeting');
 }
 
 /**
