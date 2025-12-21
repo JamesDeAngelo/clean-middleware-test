@@ -22,6 +22,7 @@ async function connectToOpenAI(callId) {
       let audioChunksSent = 0;
       let currentAssistantMessage = "";
       let questionsAsked = 0; // CRITICAL: Track how many questions have been asked
+      let greetingTriggered = false; // Prevent double greeting
 
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
@@ -150,16 +151,17 @@ async function connectToOpenAI(callId) {
 
           if (msg.type === "session.created") {
             logger.info('✓ OpenAI session ready');
-            setTimeout(() => {
-              triggerGreeting(ws);
-            }, 500);
+            // Don't trigger here - wait for session.updated
           }
           
           if (msg.type === "session.updated") {
             logger.info(`✓ Session configured - triggering greeting`);
-            setTimeout(() => {
-              triggerGreeting(ws);
-            }, 500);
+            if (!greetingTriggered) {
+              greetingTriggered = true;
+              setTimeout(() => {
+                triggerGreeting(ws);
+              }, 500);
+            }
           }
 
         } catch (err) {
@@ -185,18 +187,19 @@ async function connectToOpenAI(callId) {
 
 function triggerGreeting(ws) {
   if (ws?.readyState !== 1) {
+    logger.error('Cannot trigger greeting - WebSocket not open');
     return;
   }
   
+  // Just trigger a response without instructions - let the system prompt handle it
   ws.send(JSON.stringify({
     type: "response.create",
     response: {
-      modalities: ["text", "audio"],
-      instructions: "Say your greeting: Thank you for calling the law office, this is Sarah. How can I help you today?"
+      modalities: ["text", "audio"]
     }
   }));
   
-  logger.info('📞 Triggering opening greeting');
+  logger.info('📞 Greeting triggered');
 }
 
 function attachTelnyxStream(callId, telnyxWs, streamSid) {
