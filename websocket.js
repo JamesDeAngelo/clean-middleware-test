@@ -4,7 +4,6 @@ const sessionStore = require('./utils/sessionStore');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendAudioToOpenAI
 } = require('./openai');
 
@@ -118,10 +117,7 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - triggering greeting');
-            setTimeout(() => {
-              sendOpeningGreeting(ws);
-            }, 500);
+            logger.info('✓ Session configured - ready for caller');
           }
 
         } catch (err) {
