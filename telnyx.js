@@ -145,10 +145,17 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    // Check if conversation completed naturally (AI said goodbye)
-    if (!sessionStore.isConversationComplete(callControlId)) {
-      logger.warn(`⚠️ Conversation incomplete - caller hung up early. Not saving.`);
+    // FIXED: Check if conversation completed naturally OR is substantial (6+ questions)
+    const isComplete = sessionStore.isConversationComplete(callControlId);
+    const isSubstantial = session.conversationSubstantial || false;
+    
+    if (!isComplete && !isSubstantial) {
+      logger.warn(`⚠️ Conversation incomplete and not substantial - caller hung up early. Not saving.`);
       return;
+    }
+    
+    if (isSubstantial && !isComplete) {
+      logger.info(`📊 Conversation was substantial (6+ questions) but caller hung up before closing. Saving anyway.`);
     }
     
     const transcript = sessionStore.getFullTranscript(callControlId);
@@ -158,16 +165,15 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    // Check if we have enough data (at least name mentioned)
-    const hasName = transcript.toLowerCase().includes("name") || 
-                   transcript.match(/my name is|i'm |i am /i);
+    // Relaxed check - just need some user responses
+    const hasUserResponses = session.transcript?.user?.length > 0;
     
-    if (!hasName) {
-      logger.warn(`⚠️ No name captured - likely incomplete call`);
+    if (!hasUserResponses) {
+      logger.warn(`⚠️ No user responses captured - likely bot or immediate hangup`);
       return;
     }
     
-    logger.info(`💾 Saving complete call data...`);
+    logger.info(`💾 Saving call data...`);
     logger.info(`📋 Transcript:\n${transcript}`);
     
     const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);

@@ -16,7 +16,8 @@ function createSession(callId, ws) {
     },
     lastAiResponseTime: null,
     saved: false,
-    conversationComplete: false, // NEW: Flag when AI says goodbye
+    conversationComplete: false, // AI said goodbye properly
+    conversationSubstantial: false, // NEW: 6+ questions asked
     createdAt: new Date()
   };
   
@@ -108,7 +109,8 @@ function getAllSessions() {
     createdAt: session.createdAt,
     lastActivity: session.lastAiResponseTime,
     saved: session.saved,
-    complete: session.conversationComplete
+    complete: session.conversationComplete,
+    substantial: session.conversationSubstantial
   }));
 }
 
