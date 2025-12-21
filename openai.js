@@ -1,172 +1,279 @@
-const WebSocket = require('ws');
 const logger = require('./utils/logger');
-const sessionStore = require('./utils/sessionStore');
-const { 
-  buildSystemPrompt, 
-  buildInitialRealtimePayload,
-  sendAudioToOpenAI
-} = require('./openai');
 
-const OPENAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
+if (!process.env.OPENAI_API_KEY) {
+  logger.error('Missing OPENAI_API_KEY');
+}
 
-async function connectToOpenAI(callId) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const ws = new WebSocket(OPENAI_URL, {
-        headers: {
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-          "OpenAI-Beta": "realtime=v1"
-        }
-      });
+async function buildSystemPrompt() {
+  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner.
 
-      let audioChunksSent = 0;
-      let currentAssistantMessage = "";
+YOUR GOALS:
+- Lead every conversation confidently from start to finish
+- Collect all required information for attorney review
+- Never wait for the caller to volunteer information - YOU ask the questions
+- Keep the call moving with short, natural responses
+- Show empathy when appropriate, then immediately move to the next question
 
-      ws.on('open', async () => {
-        logger.info('✓ OpenAI connected');
-        
-        const systemPrompt = await buildSystemPrompt();
-        const initPayload = await buildInitialRealtimePayload(systemPrompt);
-        
-        ws.send(JSON.stringify(initPayload));
-        
-        sessionStore.createSession(callId, ws);
-        
-        resolve(ws);
-      });
+OPENING (START HERE IMMEDIATELY):
+"Hi, this is Sarah with the law office. How can I help you?"
 
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          
-          // Handle audio from OpenAI
-          if (msg.type === "response.audio.delta" && msg.delta) {
-            const session = sessionStore.getSession(callId);
-            
-            if (!session || !session.streamConnection || session.streamConnection.readyState !== 1) {
-              return;
-            }
-            
-            const audioPayload = {
-              event: 'media',
-              stream_sid: session.streamSid,
-              media: {
-                track: 'outbound',
-                payload: msg.delta
-              }
-            };
-            
-            session.streamConnection.send(JSON.stringify(audioPayload));
-            audioChunksSent++;
-            
-            if (audioChunksSent % 20 === 0) {
-              logger.info(`📤 ${audioChunksSent} chunks sent`);
-            }
-          }
+AFTER CALLER RESPONDS, CONTINUE WITH:
+"I understand you were in an accident involving a truck. I'm going to ask you a few quick questions so we can see how we can help. First, were you the person who was injured in the accident?"
 
-          // Track AI transcript
-          if (msg.type === "response.audio_transcript.delta") {
-            currentAssistantMessage += msg.delta;
-          }
+QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 
-          if (msg.type === "response.audio_transcript.done") {
-            if (currentAssistantMessage.trim()) {
-              const message = currentAssistantMessage.trim();
-              sessionStore.addAssistantTranscript(callId, message);
-              
-              // Check if conversation is ending
-              const isEnding = message.toLowerCase().includes("take care") || 
-                              message.toLowerCase().includes("call you within") ||
-                              message.toLowerCase().includes("attorney will call");
-              
-              if (isEnding) {
-                logger.info(`🎬 Conversation ending detected`);
-                const session = sessionStore.getSession(callId);
-                if (session) {
-                  session.conversationComplete = true;
-                  sessionStore.updateSession(callId, session);
-                }
-              }
-              
-              currentAssistantMessage = "";
-            }
-          }
+1. ARE YOU THE INJURED PERSON?
+   - "Were you the person who was injured in the accident?"
+   - If NO: "Okay, got it. And who was injured?" (then continue)
+   - If YES: "Okay." (move to next question)
 
-          if (msg.type === "input_audio_buffer.speech_started") {
-            logger.info('🎤 User speaking');
-          }
+2. WAS A COMMERCIAL TRUCK INVOLVED?
+   - "Was this a commercial truck, like an 18-wheeler or semi?"
+   - Get clear yes or no
+   - Brief acknowledgment: "Alright."
 
-          if (msg.type === "input_audio_buffer.speech_stopped") {
-            logger.info('🔇 User stopped');
-          }
+3. WERE YOU TREATED BY A DOCTOR OR HOSPITAL?
+   - "Did you see a doctor or go to the hospital after the accident?"
+   - Get clear yes or no
+   - If NO: "Okay, understood."
+   - If YES: "Got it."
 
-          // Track user transcript
-          if (msg.type === "conversation.item.input_audio_transcription.completed") {
-            if (msg.transcript && msg.transcript.trim()) {
-              sessionStore.addUserTranscript(callId, msg.transcript.trim());
-            }
-          }
+4. WHEN DID IT HAPPEN?
+   - "When did this accident happen?"
+   - Accept any date format (yesterday, last week, specific date)
+   - Acknowledge: "Okay."
 
-          if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (${audioChunksSent} chunks)`);
-            audioChunksSent = 0;
-          }
+5. WHERE DID IT HAPPEN?
+   - "Where did the accident happen? What city or highway?"
+   - Brief acknowledgment: "Alright."
 
-          if (msg.type === "error") {
-            logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
-          }
+6. WHAT INJURIES?
+   - "What injuries did you have?"
+   - Let them explain briefly (1-2 sentences)
+   - Show empathy: "I'm sorry to hear that." then immediately move on
 
-          if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - ready for caller');
-          }
+7. POLICE REPORT?
+   - "Did the police come to the scene and file a report?"
+   - Get yes, no, or don't know
+   - Acknowledge: "Okay."
 
-        } catch (err) {
-          logger.error(`Parse error: ${err.message}`);
-        }
-      });
+8. YOUR NAME?
+   - "And what's your name?"
+   - Acknowledge: "Thanks."
 
-      ws.on('error', (err) => {
-        logger.error(`OpenAI error: ${err.message}`);
-        reject(err);
-      });
+9. CONFIRM PHONE NUMBER
+   - "And what's the best number to reach you at?"
+   - (Note: We already have their number from caller ID, but confirm it)
+   - Acknowledge: "Perfect."
 
-      ws.on('close', () => {
-        logger.info('OpenAI closed');
-      });
+10. CLOSE
+    - "Great. An attorney will review your case and call you back within 24 hours. Take care."
 
-    } catch (error) {
-      logger.error(`Connect failed: ${error.message}`);
-      reject(error);
+CONVERSATION RULES:
+
+DO:
+- Ask one question at a time
+- Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
+- Move immediately to the next question after acknowledgment
+- Show empathy only when discussing injuries: "I'm sorry to hear that."
+- Sound natural and conversational, not scripted
+- Use occasional filler words: "And...", "So...", "Alright..."
+- Lead the conversation - never wait for them to volunteer info
+
+DON'T:
+- Ask follow-up questions beyond the required list
+- Give legal advice or case evaluations
+- Promise outcomes or settlements
+- Let the caller control the conversation flow
+- Repeat questions if you already got an answer
+- Use overly formal language
+- Ask about truck type or details beyond "commercial truck yes/no"
+
+IF CALLER RAMBLES:
+- Let them finish their sentence
+- Acknowledge briefly: "I understand."
+- Redirect immediately: "Quick question - [next question]"
+
+IF CALLER ASKS YOU A QUESTION:
+- Brief answer: "An attorney will discuss that with you when they call back."
+- Return to your script: "Let me just get a few more details..."
+
+YOUR TONE:
+- Warm but efficient
+- Confident and in control
+- Empathetic during injury discussion
+- Professional throughout
+
+Remember: You are collecting information, not evaluating cases. Every caller gets the full intake, and attorneys review later.`;
+}
+
+async function buildInitialRealtimePayload(systemPrompt) {
+  return {
+    type: "session.update",
+    session: {
+      modalities: ["text", "audio"],
+      instructions: systemPrompt,
+      voice: "coral",
+      input_audio_format: "g711_ulaw",
+      output_audio_format: "g711_ulaw",
+      input_audio_transcription: {
+        model: "whisper-1"
+      },
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 1200
+      },
+      temperature: 0.9,
+      max_response_output_tokens: 2048
     }
-  });
+  };
 }
 
-function attachTelnyxStream(callId, telnyxWs, streamSid) {
-  const session = sessionStore.getSession(callId);
-  
-  if (!session) {
-    logger.error(`❌ No session for: ${callId}`);
+/**
+ * Extract structured data from conversation transcript
+ */
+async function extractLeadDataFromTranscript(transcript, callerPhone) {
+  const today = new Date();
+  const todayFormatted = today.toISOString().split('T')[0];
+  const yesterdayFormatted = new Date(today.getTime() - 86400000).toISOString().split('T')[0];
+  const lastWeekFormatted = new Date(today.getTime() - 604800000).toISOString().split('T')[0];
+
+  const extractionPrompt = `You are a data extraction assistant. Today's date is ${todayFormatted}.
+
+Extract information from this TRUCK ACCIDENT intake call transcript.
+
+Transcript:
+${transcript}
+
+Extract these fields in JSON format:
+{
+  "name": "",
+  "dateOfAccident": "",
+  "accidentLocation": "",
+  "injuriesSustained": "",
+  "policeReportFiled": "",
+  "areYouTheInjuredPerson": "",
+  "wasCommercialTruckInvolved": "",
+  "wereTreatedByDoctorOrHospital": ""
+}
+
+CRITICAL RULES:
+- name: The CALLER'S name (like "John Smith" or "Maria Garcia"), NOT "Sarah" (that's the agent)
+- dateOfAccident: Convert to YYYY-MM-DD format
+  * "yesterday" = ${yesterdayFormatted}
+  * "last week" = ${lastWeekFormatted}
+  * "I don't know" or unclear = leave EMPTY
+- accidentLocation: City and state, or highway/road name
+- injuriesSustained: What injuries they mentioned (e.g., "broken arm", "back pain", "whiplash")
+- policeReportFiled: "Yes", "No", or "Unknown"
+- areYouTheInjuredPerson: "Yes" if they were hurt, "No" if calling on behalf of someone else
+- wasCommercialTruckInvolved: "Yes" if 18-wheeler/semi-truck/commercial truck mentioned, "No" if passenger vehicle
+- wereTreatedByDoctorOrHospital: "Yes" if they saw doctor/went to hospital/ER, "No" if they didn't seek medical care
+
+IMPORTANT:
+- Only extract the CALLER'S information, not the agent Sarah
+- If something wasn't mentioned or is unclear, leave that field EMPTY (empty string "")
+- Date must be YYYY-MM-DD format or empty
+- For Yes/No fields, use exactly "Yes" or "No" (not "yes", "YES", etc.)
+
+Return ONLY the JSON object, no other text.`;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'user', content: extractionPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 500
+      })
+    });
+
+    const data = await response.json();
+    const extractedText = data.choices[0].message.content.trim();
+    
+    const jsonText = extractedText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    const extractedData = JSON.parse(jsonText);
+    
+    extractedData.phoneNumber = callerPhone || "";
+    
+    logger.info(`✅ Extracted: ${JSON.stringify(extractedData)}`);
+    return extractedData;
+
+  } catch (error) {
+    logger.error(`❌ Extraction failed: ${error.message}`);
+    return {
+      name: "",
+      phoneNumber: callerPhone || "",
+      dateOfAccident: "",
+      accidentLocation: "",
+      injuriesSustained: "",
+      policeReportFiled: "",
+      areYouTheInjuredPerson: "",
+      wasCommercialTruckInvolved: "",
+      wereTreatedByDoctorOrHospital: ""
+    };
+  }
+}
+
+function sendOpeningGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send greeting - WebSocket not open');
     return;
   }
   
-  session.streamConnection = telnyxWs;
-  session.streamSid = streamSid;
-  sessionStore.updateSession(callId, session);
-  logger.info(`✓ Stream attached`);
+  ws.send(JSON.stringify({
+    type: "response.create"
+  }));
+  
+  logger.info('🎤 Opening greeting triggered');
 }
 
-function forwardAudioToOpenAI(callId, audioBuffer) {
-  const session = sessionStore.getSession(callId);
-  
-  if (!session || !session.ws || session.ws.readyState !== 1) {
+function sendTextToOpenAI(ws, text) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send text - WebSocket not open');
     return;
   }
   
-  sendAudioToOpenAI(session.ws, audioBuffer);
+  ws.send(JSON.stringify({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }]
+    }
+  }));
+  
+  ws.send(JSON.stringify({ type: "response.create" }));
+  
+  logger.info(`📝 Text sent to OpenAI: "${text}"`);
+}
+
+function sendAudioToOpenAI(ws, audioBuffer) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot send audio - WebSocket not open');
+    return;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "input_audio_buffer.append",
+    audio: audioBuffer
+  }));
 }
 
 module.exports = {
-  connectToOpenAI,
-  attachTelnyxStream,
-  forwardAudioToOpenAI
+  buildSystemPrompt,
+  buildInitialRealtimePayload,
+  sendOpeningGreeting,
+  sendTextToOpenAI,
+  sendAudioToOpenAI,
+  extractLeadDataFromTranscript
 };
