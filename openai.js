@@ -71,7 +71,7 @@ CONVERSATION RULES:
 DO:
 - After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
-- WAIT patiently for the answer - give them time to think and respond
+- WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
 - Move immediately to the next question after acknowledgment
 - Show empathy only when discussing injuries: "I'm sorry to hear that."
@@ -79,8 +79,6 @@ DO:
 - Use occasional filler words: "And...", "So...", "Alright..."
 - Lead the conversation - never wait for them to volunteer info
 - ALWAYS wait for the user to finish speaking before responding
-- If you don't hear a clear response, politely ask: "Sorry, I didn't catch that. Could you repeat that for me?"
-- If there's background noise or unclear audio, say: "I'm having a bit of trouble hearing you. Could you say that again?"
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -91,22 +89,11 @@ DON'T:
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
 - Continue talking without waiting for user response
-- Rush the caller or interrupt them
-
-IF CALLER IS SLOW TO RESPOND OR SILENT:
-- Wait patiently
-- After reasonable time, ask: "Are you still there?"
-- If still no response: "Hello? Can you hear me okay?"
 
 IF CALLER RAMBLES:
-- Let them finish their sentence completely
+- Let them finish their sentence
 - Acknowledge briefly: "I understand."
 - Redirect immediately: "Quick question - [next question]"
-
-IF YOU DON'T HEAR/UNDERSTAND THEIR ANSWER:
-- Say: "I'm sorry, I didn't quite catch that. Could you repeat that for me?"
-- Listen again carefully
-- If still unclear: "I'm having a little trouble hearing. Could you say that one more time?"
 
 IF CALLER ASKS YOU A QUESTION:
 - Brief answer: "An attorney will discuss that with you when they call back."
@@ -114,11 +101,9 @@ IF CALLER ASKS YOU A QUESTION:
 
 YOUR TONE:
 - Warm but efficient
-- Patient and understanding
 - Confident and in control
 - Empathetic during injury discussion
 - Professional throughout
-- Never rushed or impatient
 
 Remember: You are collecting information, not evaluating cases. Every caller gets the full intake, and attorneys review later.`;
 }
@@ -137,10 +122,9 @@ async function buildInitialRealtimePayload(systemPrompt) {
       },
       turn_detection: {
         type: "server_vad",
-        threshold: 0.5,              // Back to default - the issue is elsewhere
-        prefix_padding_ms: 300,      
-        silence_duration_ms: 800,    // REDUCED! The issue is it's not detecting silence end at all
-        create_response: true        // CRITICAL: Auto-create response when user stops
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 1800
       },
       temperature: 0.8,
       max_response_output_tokens: 2048
@@ -148,17 +132,12 @@ async function buildInitialRealtimePayload(systemPrompt) {
   };
 }
 
-/**
- * Trigger the AI to give its opening greeting naturally
- * Call this after session.updated event
- */
 function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
     logger.error('Cannot send greeting - WebSocket not open');
     return;
   }
 
-  // Just trigger a response - let the AI naturally say its greeting from the system prompt
   ws.send(JSON.stringify({
     type: "response.create",
     response: { 
@@ -169,9 +148,6 @@ function sendOpeningGreeting(ws) {
   logger.info('📞 Triggering opening greeting');
 }
 
-/**
- * Extract structured data from conversation transcript
- */
 async function extractLeadDataFromTranscript(transcript, callerPhone) {
   const today = new Date();
   const todayFormatted = today.toISOString().split('T')[0];
@@ -302,4 +278,3 @@ module.exports = {
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
 };
-

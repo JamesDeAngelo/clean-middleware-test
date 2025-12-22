@@ -18,9 +18,11 @@ function setupMediaStreamWebSocket(wss) {
         
         if (msg.event === 'start') {
           callId = msg.start?.call_control_id;
-          streamSid = msg.start?.stream_id;
+          streamSid = msg.start?.stream_sid || msg.streamSid || msg.start?.stream_id;
+          
           logger.info(`📞 Stream started for call: ${callId}`);
           logger.info(`Stream ID: ${streamSid}`);
+          logger.info(`Full start event: ${JSON.stringify(msg.start)}`);
           logger.info(`Format: ${JSON.stringify(msg.start?.media_format)}`);
           
           if (callId) {
@@ -75,5 +77,4 @@ function setupMediaStreamWebSocket(wss) {
 }
 
 module.exports = { setupMediaStreamWebSocket };
-
 
