@@ -4,7 +4,6 @@ const sessionStore = require('./utils/sessionStore');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendAudioToOpenAI
 } = require('./openai');
 
@@ -117,11 +116,15 @@ async function connectToOpenAI(callId) {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
-          if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - triggering greeting');
+          if (msg.type === "session.created") {
+            logger.info('✓ OpenAI session ready');
             setTimeout(() => {
-              sendOpeningGreeting(ws);
+              triggerGreeting(ws);
             }, 500);
+          }
+          
+          if (msg.type === "session.updated") {
+            logger.info(`✓ Session updated`);
           }
 
         } catch (err) {
@@ -143,6 +146,22 @@ async function connectToOpenAI(callId) {
       reject(error);
     }
   });
+}
+
+function triggerGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    return;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "Say: Hi! This is Sarah from the law office. What happened?"
+    }
+  }));
+  
+  logger.info('🎙️ Greeting triggered');
 }
 
 function attachTelnyxStream(callId, telnyxWs, streamSid) {
@@ -174,3 +193,4 @@ module.exports = {
   attachTelnyxStream,
   forwardAudioToOpenAI
 };
+

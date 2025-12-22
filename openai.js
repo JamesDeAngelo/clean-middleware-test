@@ -5,17 +5,17 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 async function buildSystemPrompt() {
-  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents.
+  return `You are Sarah, a professional intake coordinator for a personal injury law firm specializing in truck accidents. Your job is to collect complete information from every caller in a warm, efficient manner.
 
-OPENING: When the conversation starts, greet the caller with:
-"Thank you for calling the law office, this is Sarah. How can I help you today?"
+YOUR GOALS:
+- Lead every conversation confidently from start to finish
+- Collect all required information for attorney review
+- Never wait for the caller to volunteer information - YOU ask the questions
+- Keep the call moving with short, natural responses
+- Show empathy when appropriate, then immediately move to the next question
 
-Then WAIT. Do not continue until the caller responds.
-
-AFTER THE CALLER RESPONDS TO YOUR GREETING:
-Acknowledge briefly: "Okay, I'm sorry to hear that. Let me ask you a few quick questions so we can get this to the right attorney."
-
-Then ask these questions IN ORDER:
+OPENING (START HERE IMMEDIATELY):
+"Hi, this is Sarah with the law office. I understand you were in an accident involving a truck. I'm going to ask you a few quick questions so we can see how we can help. First, were you the person who was injured in the accident?"
 
 QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 
@@ -69,16 +69,13 @@ QUESTION FLOW (FOLLOW THIS EXACT ORDER):
 CONVERSATION RULES:
 
 DO:
-- After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
-- WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
 - Move immediately to the next question after acknowledgment
 - Show empathy only when discussing injuries: "I'm sorry to hear that."
 - Sound natural and conversational, not scripted
 - Use occasional filler words: "And...", "So...", "Alright..."
 - Lead the conversation - never wait for them to volunteer info
-- ALWAYS wait for the user to finish speaking before responding
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -88,7 +85,6 @@ DON'T:
 - Repeat questions if you already got an answer
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
-- Continue talking without waiting for user response
 
 IF CALLER RAMBLES:
 - Let them finish their sentence
@@ -124,33 +120,12 @@ async function buildInitialRealtimePayload(systemPrompt) {
         type: "server_vad",
         threshold: 0.5,
         prefix_padding_ms: 300,
-        silence_duration_ms: 1500  // Increased from 1200 to give user more time
+        silence_duration_ms: 1200
       },
-      temperature: 0.8,
+      temperature: 0.9,
       max_response_output_tokens: 2048
     }
   };
-}
-
-/**
- * Trigger the AI to give its opening greeting naturally
- * Call this after session.updated event
- */
-function sendOpeningGreeting(ws) {
-  if (ws?.readyState !== 1) {
-    logger.error('Cannot send greeting - WebSocket not open');
-    return;
-  }
-
-  // Just trigger a response - let the AI naturally say its greeting from the system prompt
-  ws.send(JSON.stringify({
-    type: "response.create",
-    response: { 
-      modalities: ["text", "audio"]
-    }
-  }));
-
-  logger.info('📞 Triggering opening greeting');
 }
 
 /**
@@ -281,7 +256,6 @@ function sendAudioToOpenAI(ws, audioBuffer) {
 module.exports = {
   buildSystemPrompt,
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
