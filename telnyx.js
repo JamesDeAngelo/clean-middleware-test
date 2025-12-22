@@ -97,11 +97,10 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
+    // CRITICAL FIX: Only send inbound track to prevent echo!
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
+      stream_track: 'inbound_track',  // CHANGED FROM 'both_tracks' - this is the key fix!
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -121,7 +120,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started');
+    logger.info('✓ Streaming started (INBOUND ONLY - no echo!)');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -203,6 +202,5 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
-
 
 

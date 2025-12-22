@@ -81,7 +81,6 @@ DO:
 - ALWAYS wait for the user to finish speaking before responding
 - If you don't hear a clear response, politely ask: "Sorry, I didn't catch that. Could you repeat that for me?"
 - If there's background noise or unclear audio, say: "I'm having a bit of trouble hearing you. Could you say that again?"
-- Speak slowly and clearly to ensure your words aren't cut off
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -93,12 +92,11 @@ DON'T:
 - Ask about truck type or details beyond "commercial truck yes/no"
 - Continue talking without waiting for user response
 - Rush the caller or interrupt them
-- Assume silence means they're done - give them time
 
 IF CALLER IS SLOW TO RESPOND OR SILENT:
-- Wait 3-4 seconds
-- Then ask: "Are you still there?"
-- If still no response after 3 more seconds: "Hello? Can you hear me okay?"
+- Wait patiently
+- After reasonable time, ask: "Are you still there?"
+- If still no response: "Hello? Can you hear me okay?"
 
 IF CALLER RAMBLES:
 - Let them finish their sentence completely
@@ -114,10 +112,6 @@ IF CALLER ASKS YOU A QUESTION:
 - Brief answer: "An attorney will discuss that with you when they call back."
 - Return to your script: "Let me just get a few more details..."
 
-IF THERE'S BACKGROUND NOISE:
-- Acknowledge it professionally: "I hear there might be some background noise. That's okay, just speak clearly and I'll do my best to hear you."
-- If truly can't hear: "I'm having difficulty hearing you with the background noise. Could you move somewhere quieter if possible?"
-
 YOUR TONE:
 - Warm but efficient
 - Patient and understanding
@@ -126,7 +120,7 @@ YOUR TONE:
 - Professional throughout
 - Never rushed or impatient
 
-Remember: You are collecting information, not evaluating cases. Every caller gets the full intake, and attorneys review later. Be patient and give callers time to respond.`;
+Remember: You are collecting information, not evaluating cases. Every caller gets the full intake, and attorneys review later.`;
 }
 
 async function buildInitialRealtimePayload(systemPrompt) {
@@ -143,9 +137,10 @@ async function buildInitialRealtimePayload(systemPrompt) {
       },
       turn_detection: {
         type: "server_vad",
-        threshold: 0.6,              // Increased from 0.5 - less sensitive to background noise
-        prefix_padding_ms: 400,      // Increased from 300 - capture more of start of speech
-        silence_duration_ms: 2200    // Increased from 1500 - give user much more time before assuming they're done
+        threshold: 0.5,              // Back to default - the issue is elsewhere
+        prefix_padding_ms: 300,      
+        silence_duration_ms: 800,    // REDUCED! The issue is it's not detecting silence end at all
+        create_response: true        // CRITICAL: Auto-create response when user stops
       },
       temperature: 0.8,
       max_response_output_tokens: 2048
@@ -307,5 +302,4 @@ module.exports = {
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
 };
-
 
