@@ -97,11 +97,11 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // FIXED: We need both_tracks for WebSocket to work properly
-    // The key is filtering in mediaStream.js to only send inbound to OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',  // Need both for bidirectional audio
+      stream_track: 'both_tracks',
+      stream_bidirectional_mode: 'rtp',
+      stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -184,10 +184,12 @@ async function saveSessionDataBeforeCleanup(callControlId) {
 }
 
 async function handleStreamingStopped(callControlId) {
+  // DON'T save here - let call.hangup handle it
   logger.info('✓ Streaming stopped - waiting for hangup event');
 }
 
 async function handleCallHangup(callControlId) {
+  // ONLY SAVE HERE - single point of saving
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
@@ -201,4 +203,5 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
+
 

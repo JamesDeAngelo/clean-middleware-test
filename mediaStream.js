@@ -7,8 +7,7 @@ function setupMediaStreamWebSocket(wss) {
   wss.on('connection', (ws) => {
     let callId = null;
     let streamSid = null;
-    let inboundChunks = 0;
-    let outboundChunks = 0;
+    let chunkCount = 0;
     
     logger.info('📞 New WebSocket connection established');
     
@@ -18,11 +17,9 @@ function setupMediaStreamWebSocket(wss) {
         
         if (msg.event === 'start') {
           callId = msg.start?.call_control_id;
-          streamSid = msg.start?.stream_sid || msg.streamSid || msg.start?.stream_id;
-          
+          streamSid = msg.start?.stream_id;
           logger.info(`📞 Stream started for call: ${callId}`);
           logger.info(`Stream ID: ${streamSid}`);
-          logger.info(`Full start event: ${JSON.stringify(msg.start)}`);
           logger.info(`Format: ${JSON.stringify(msg.start?.media_format)}`);
           
           if (callId) {
@@ -33,32 +30,20 @@ function setupMediaStreamWebSocket(wss) {
         }
         
         if (msg.event === 'media' && msg.media?.payload && callId) {
-          const track = msg.media.track;
+          chunkCount++;
           
-          // CRITICAL FIX: Only forward INBOUND audio to OpenAI
-          // This prevents OpenAI from hearing itself (echo/feedback loop)
-          if (track === 'inbound') {
-            inboundChunks++;
-            
-            if (inboundChunks % 100 === 0) {
-              logger.info(`📥 ${inboundChunks} inbound chunks received (user audio)`);
-            }
-            
-            // Send user's audio to OpenAI for processing
+          if (chunkCount % 100 === 0) {
+            logger.info(`📥 ${chunkCount} chunks received from Telnyx`);
+          }
+          
+          // Only forward inbound audio to OpenAI
+          if (msg.media.track === 'inbound' || !msg.media.track) {
             forwardAudioToOpenAI(callId, msg.media.payload);
-          } else if (track === 'outbound') {
-            // This is audio going TO the user (AI's voice or hold music)
-            // We DON'T send this to OpenAI - it would create feedback
-            outboundChunks++;
-            
-            if (outboundChunks % 100 === 0) {
-              logger.info(`📤 ${outboundChunks} outbound chunks (AI audio to user)`);
-            }
           }
         }
         
         if (msg.event === 'stop') {
-          logger.info(`Stream ended: ${inboundChunks} inbound, ${outboundChunks} outbound chunks`);
+          logger.info(`Stream ended: ${chunkCount} total chunks`);
         }
         
       } catch (err) {
@@ -77,4 +62,5 @@ function setupMediaStreamWebSocket(wss) {
 }
 
 module.exports = { setupMediaStreamWebSocket };
+
 
