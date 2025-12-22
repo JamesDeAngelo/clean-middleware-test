@@ -97,10 +97,11 @@ async function handleCallAnswered(callControlId, payload) {
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
-    // CRITICAL FIX: Only send inbound track to prevent echo!
+    // FIXED: We need both_tracks for WebSocket to work properly
+    // The key is filtering in mediaStream.js to only send inbound to OpenAI
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'inbound_track',  // CHANGED FROM 'both_tracks' - this is the key fix!
+      stream_track: 'both_tracks',  // Need both for bidirectional audio
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -120,7 +121,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started (INBOUND ONLY - no echo!)');
+    logger.info('✓ Streaming started');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -183,12 +184,10 @@ async function saveSessionDataBeforeCleanup(callControlId) {
 }
 
 async function handleStreamingStopped(callControlId) {
-  // DON'T save here - let call.hangup handle it
   logger.info('✓ Streaming stopped - waiting for hangup event');
 }
 
 async function handleCallHangup(callControlId) {
-  // ONLY SAVE HERE - single point of saving
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
@@ -202,5 +201,4 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
-
 

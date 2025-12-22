@@ -7,7 +7,8 @@ function setupMediaStreamWebSocket(wss) {
   wss.on('connection', (ws) => {
     let callId = null;
     let streamSid = null;
-    let chunkCount = 0;
+    let inboundChunks = 0;
+    let outboundChunks = 0;
     
     logger.info('📞 New WebSocket connection established');
     
@@ -30,20 +31,32 @@ function setupMediaStreamWebSocket(wss) {
         }
         
         if (msg.event === 'media' && msg.media?.payload && callId) {
-          chunkCount++;
+          const track = msg.media.track;
           
-          if (chunkCount % 100 === 0) {
-            logger.info(`📥 ${chunkCount} chunks received from Telnyx`);
-          }
-          
-          // Only forward inbound audio to OpenAI
-          if (msg.media.track === 'inbound' || !msg.media.track) {
+          // CRITICAL FIX: Only forward INBOUND audio to OpenAI
+          // This prevents OpenAI from hearing itself (echo/feedback loop)
+          if (track === 'inbound') {
+            inboundChunks++;
+            
+            if (inboundChunks % 100 === 0) {
+              logger.info(`📥 ${inboundChunks} inbound chunks received (user audio)`);
+            }
+            
+            // Send user's audio to OpenAI for processing
             forwardAudioToOpenAI(callId, msg.media.payload);
+          } else if (track === 'outbound') {
+            // This is audio going TO the user (AI's voice or hold music)
+            // We DON'T send this to OpenAI - it would create feedback
+            outboundChunks++;
+            
+            if (outboundChunks % 100 === 0) {
+              logger.info(`📤 ${outboundChunks} outbound chunks (AI audio to user)`);
+            }
           }
         }
         
         if (msg.event === 'stop') {
-          logger.info(`Stream ended: ${chunkCount} total chunks`);
+          logger.info(`Stream ended: ${inboundChunks} inbound, ${outboundChunks} outbound chunks`);
         }
         
       } catch (err) {
@@ -62,6 +75,5 @@ function setupMediaStreamWebSocket(wss) {
 }
 
 module.exports = { setupMediaStreamWebSocket };
-
 
 
