@@ -1,8 +1,6 @@
 const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
-const { saveLeadToAirtable } = require('./airtable');
-const { extractLeadDataFromTranscript } = require('./openai');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -55,12 +53,6 @@ async function handleWebhook(req, res) {
 async function handleCallInitiated(callControlId, payload) {
   logger.info('📞 Call initiated');
   
-  const callerPhone = payload.from || payload.caller_id_number || null;
-  
-  if (callerPhone) {
-    logger.info(`📱 Caller: ${callerPhone}`);
-  }
-  
   try {
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
@@ -83,25 +75,24 @@ async function handleCallAnswered(callControlId, payload) {
   logger.info('✓ Call answered event');
   
   try {
+    // Connect to OpenAI first and store callControlId in session
     await connectToOpenAI(callControlId);
     
-    const callerPhone = payload.from || payload.caller_id_number || null;
-    
+    // Store callControlId in the session so we can use it later
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
-      session.callerPhone = callerPhone;
       sessionStore.updateSession(callControlId, session);
-      logger.info(`📱 Stored: ${callerPhone}`);
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
     
+    // Use both_tracks with bidirectional RTP streaming
     const streamingConfig = {
       stream_url: streamUrl,
       stream_track: 'both_tracks',
-      stream_bidirectional_mode: 'rtp',
-      stream_bidirectional_codec: 'PCMU',
+      stream_bidirectional_mode: 'rtp',  // THIS IS THE KEY!
+      stream_bidirectional_codec: 'PCMU',  // G.711 µ-law
       enable_dialogflow: false,
       media_format: {
         codec: 'PCMU',
@@ -109,6 +100,8 @@ async function handleCallAnswered(callControlId, payload) {
         channels: 1
       }
     };
+    
+    logger.info(`Starting stream with config: ${JSON.stringify(streamingConfig)}`);
     
     await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
@@ -121,7 +114,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✓ Streaming started');
+    logger.info('✓ Streaming started with PCMU @ 8kHz (bidirectional RTP mode)');
     
   } catch (error) {
     logger.error(`Failed to initialize: ${error.message}`);
@@ -131,73 +124,18 @@ async function handleCallAnswered(callControlId, payload) {
   }
 }
 
-async function saveSessionDataBeforeCleanup(callControlId) {
-  try {
-    if (sessionStore.wasSaved(callControlId)) {
-      logger.info(`⏭️ Already saved`);
-      return;
-    }
-    
-    const session = sessionStore.getSession(callControlId);
-    
-    if (!session) {
-      logger.warn(`⚠️ No session to save`);
-      return;
-    }
-    
-    // FIXED: Check if conversation completed naturally OR is substantial (6+ questions)
-    const isComplete = sessionStore.isConversationComplete(callControlId);
-    const isSubstantial = session.conversationSubstantial || false;
-    
-    if (!isComplete && !isSubstantial) {
-      logger.warn(`⚠️ Conversation incomplete and not substantial - caller hung up early. Not saving.`);
-      return;
-    }
-    
-    if (isSubstantial && !isComplete) {
-      logger.info(`📊 Conversation was substantial (6+ questions) but caller hung up before closing. Saving anyway.`);
-    }
-    
-    const transcript = sessionStore.getFullTranscript(callControlId);
-    
-    if (!transcript || transcript.trim().length === 0) {
-      logger.warn(`⚠️ No transcript`);
-      return;
-    }
-    
-    // Relaxed check - just need some user responses
-    const hasUserResponses = session.transcript?.user?.length > 0;
-    
-    if (!hasUserResponses) {
-      logger.warn(`⚠️ No user responses captured - likely bot or immediate hangup`);
-      return;
-    }
-    
-    logger.info(`💾 Saving call data...`);
-    logger.info(`📋 Transcript:\n${transcript}`);
-    
-    const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
-    
-    await saveLeadToAirtable(leadData);
-    
-    sessionStore.markAsSaved(callControlId);
-    
-    logger.info(`✅ SAVED TO AIRTABLE!`);
-    
-  } catch (error) {
-    logger.error(`❌ Save failed: ${error.message}`);
-  }
-}
-
 async function handleStreamingStopped(callControlId) {
-  // DON'T save here - let call.hangup handle it
-  logger.info('✓ Streaming stopped - waiting for hangup event');
+  const session = sessionStore.getSession(callControlId);
+  
+  if (session?.ws?.readyState === 1) {
+    session.ws.close();
+  }
+  
+  sessionStore.deleteSession(callControlId);
+  logger.info('✓ Cleanup completed');
 }
 
 async function handleCallHangup(callControlId) {
-  // ONLY SAVE HERE - single point of saving
-  await saveSessionDataBeforeCleanup(callControlId);
-  
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
