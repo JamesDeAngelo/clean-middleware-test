@@ -133,53 +133,46 @@ async function handleCallAnswered(callControlId, payload) {
 
 async function saveSessionDataBeforeCleanup(callControlId) {
   try {
+    // Check if already saved to prevent duplicates
     if (sessionStore.wasSaved(callControlId)) {
-      logger.info(`⏭️ Already saved`);
+      logger.info(`⏭️ Already saved - skipping duplicate save`);
       return;
     }
     
     const session = sessionStore.getSession(callControlId);
     
     if (!session) {
-      logger.warn(`⚠️ No session to save`);
+      logger.warn(`⚠️ No session found for ${callControlId}`);
       return;
     }
     
-    // Check if conversation completed naturally (AI said goodbye)
-    if (!sessionStore.isConversationComplete(callControlId)) {
-      logger.warn(`⚠️ Conversation incomplete - caller hung up early. Not saving.`);
-      return;
+    // ALWAYS SAVE - even if no transcript or incomplete call
+    // Minimum requirement: phone number (always available)
+    const transcript = sessionStore.getFullTranscript(callControlId) || "";
+    const callerPhone = session.callerPhone || "Unknown";
+    
+    logger.info(`💾 ALWAYS SAVING - Phone: ${callerPhone}`);
+    
+    if (transcript.trim().length > 0) {
+      logger.info(`📋 Transcript (${transcript.length} chars):\n${transcript}`);
+    } else {
+      logger.info(`📋 No transcript - caller hung up immediately or didn't speak`);
     }
     
-    const transcript = sessionStore.getFullTranscript(callControlId);
+    // Extract whatever data we can from the transcript
+    // If transcript is empty, this will return mostly empty fields but WILL have phone number
+    const leadData = await extractLeadDataFromTranscript(transcript, callerPhone);
     
-    if (!transcript || transcript.trim().length === 0) {
-      logger.warn(`⚠️ No transcript`);
-      return;
-    }
-    
-    // Check if we have enough data (at least name mentioned)
-    const hasName = transcript.toLowerCase().includes("name") || 
-                   transcript.match(/my name is|i'm |i am /i);
-    
-    if (!hasName) {
-      logger.warn(`⚠️ No name captured - likely incomplete call`);
-      return;
-    }
-    
-    logger.info(`💾 Saving complete call data...`);
-    logger.info(`📋 Transcript:\n${transcript}`);
-    
-    const leadData = await extractLeadDataFromTranscript(transcript, session.callerPhone);
-    
+    // ALWAYS save to Airtable - even with minimal data
     await saveLeadToAirtable(leadData);
     
     sessionStore.markAsSaved(callControlId);
     
-    logger.info(`✅ SAVED TO AIRTABLE!`);
+    logger.info(`✅ SAVED TO AIRTABLE - Phone: ${callerPhone}, Name: ${leadData.name || 'Not provided'}`);
     
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
+    // Even if save fails, we tried - don't crash
   }
 }
 
@@ -199,11 +192,10 @@ async function handleCallHangup(callControlId) {
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info('✓ Call ended');
+  logger.info('✓ Call ended and cleaned up');
 }
 
 module.exports = { handleWebhook };
-
 
 
 
