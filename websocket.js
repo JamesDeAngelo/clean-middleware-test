@@ -22,6 +22,7 @@ async function connectToOpenAI(callId) {
 
       let audioChunksSent = 0;
       let currentAssistantMessage = "";
+      let audioChunksReceived = 0;
 
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
@@ -61,7 +62,7 @@ async function connectToOpenAI(callId) {
             audioChunksSent++;
             
             if (audioChunksSent % 20 === 0) {
-              logger.info(`📤 ${audioChunksSent} chunks sent`);
+              logger.info(`📤 ${audioChunksSent} chunks sent to caller`);
             }
           }
 
@@ -104,7 +105,21 @@ async function connectToOpenAI(callId) {
           // Track user transcript
           if (msg.type === "conversation.item.input_audio_transcription.completed") {
             if (msg.transcript && msg.transcript.trim()) {
-              sessionStore.addUserTranscript(callId, msg.transcript.trim());
+              const transcript = msg.transcript.trim();
+              
+              // FILTER OUT ECHOES - Don't save if it sounds like the AI
+              const isLikelyEcho = 
+                transcript.toLowerCase().includes("did you") ||
+                transcript.toLowerCase().includes("were you") ||
+                transcript.toLowerCase().includes("what city") ||
+                transcript.toLowerCase().includes("law office") ||
+                transcript.toLowerCase().includes("this is sarah");
+              
+              if (!isLikelyEcho) {
+                sessionStore.addUserTranscript(callId, transcript);
+              } else {
+                logger.warn(`⚠️ Filtered echo: "${transcript}"`);
+              }
             }
           }
 
@@ -118,8 +133,8 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - waiting for stream to fully connect');
-            // Mark that session is ready, but DON'T trigger greeting yet
+            logger.info('✓ Session configured - waiting for stream');
+            // Mark that session is ready
             const session = sessionStore.getSession(callId);
             if (session) {
               session.sessionReady = true;
@@ -161,11 +176,11 @@ function attachTelnyxStream(callId, telnyxWs, streamSid) {
   sessionStore.updateSession(callId, session);
   logger.info(`✓ Stream attached`);
   
-  // NOW trigger greeting after stream is fully connected AND session is ready
+  // NOW trigger greeting after stream is fully connected
   if (session.sessionReady && !session.greetingSent) {
-    logger.info('🎤 Stream ready - triggering greeting in 2 seconds...');
+    logger.info('🎤 Stream ready - triggering greeting in 1.5 seconds...');
     
-    // Wait 2 seconds for everything to stabilize
+    // Wait 1.5 seconds (reduced from 2 seconds for faster response)
     setTimeout(() => {
       const currentSession = sessionStore.getSession(callId);
       if (currentSession && currentSession.ws && !currentSession.greetingSent) {
@@ -174,7 +189,9 @@ function attachTelnyxStream(callId, telnyxWs, streamSid) {
           type: "input_audio_buffer.clear"
         }));
         
-        // Wait 100ms after clearing buffer
+        logger.info('🧹 Audio buffer cleared');
+        
+        // Wait 200ms after clearing buffer, then send greeting
         setTimeout(() => {
           const finalSession = sessionStore.getSession(callId);
           if (finalSession && finalSession.ws) {
@@ -182,9 +199,9 @@ function attachTelnyxStream(callId, telnyxWs, streamSid) {
             finalSession.greetingSent = true;
             sessionStore.updateSession(callId, finalSession);
           }
-        }, 100);
+        }, 200);
       }
-    }, 2000);
+    }, 1500);  // Reduced from 2000ms to 1500ms
   }
 }
 
@@ -206,9 +223,6 @@ module.exports = {
   attachTelnyxStream,
   forwardAudioToOpenAI
 };
-
-
-
 
 
 

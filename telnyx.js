@@ -64,8 +64,9 @@ async function handleCallInitiated(callControlId, payload) {
   logger.info(`🆔 Call Control ID: ${callControlId}`);
   
   try {
-    logger.info('🔄 Attempting to answer call...');
+    logger.info('🔄 Answering call IMMEDIATELY...');
     
+    // ANSWER IMMEDIATELY - No delay
     const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
       {},
@@ -74,21 +75,17 @@ async function handleCallInitiated(callControlId, payload) {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 5000
+        timeout: 3000  // Reduced timeout for faster response
       }
     );
     
-    logger.info('✅ Call answered successfully!');
-    logger.info(`Response: ${JSON.stringify(response.data)}`);
+    logger.info('✅ Call answered INSTANTLY!');
     
   } catch (error) {
     logger.error(`❌ FAILED TO ANSWER CALL: ${error.message}`);
     if (error.response) {
       logger.error(`Telnyx API Error: ${JSON.stringify(error.response.data)}`);
       logger.error(`Status Code: ${error.response.status}`);
-    }
-    if (error.code) {
-      logger.error(`Error Code: ${error.code}`);
     }
   }
 }
@@ -100,7 +97,7 @@ async function handleCallAnswered(callControlId, payload) {
     const callerPhone = payload.from || payload.caller_id_number || "Unknown";
     logger.info(`📱 Caller phone: ${callerPhone}`);
     
-    // Connect to OpenAI first
+    // Connect to OpenAI IMMEDIATELY
     logger.info('🔄 Connecting to OpenAI...');
     await connectToOpenAI(callControlId);
     logger.info('✅ OpenAI connection established');
@@ -119,14 +116,15 @@ async function handleCallAnswered(callControlId, payload) {
     const streamUrl = `${RENDER_URL}/media-stream`;
     logger.info(`🎙️ Stream URL: ${streamUrl}`);
     
-    // CRITICAL FIX: Enable echo cancellation in Telnyx streaming config
+    // NUCLEAR FIX: Only send caller's audio + aggressive echo cancellation
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'inbound_track',  // CHANGED: Only send caller audio, not AI's own voice
+      stream_track: 'inbound_track',        // ONLY caller audio - NO AI echo
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
-      enable_echo_cancellation: true,  // NEW: Enable echo cancellation
+      enable_echo_cancellation: true,       // Enable echo cancellation
+      enable_comfort_noise: false,          // DISABLE comfort noise (stops hissing)
       media_format: {
         codec: 'PCMU',
         sample_rate: 8000,
@@ -134,7 +132,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     };
     
-    logger.info('🔄 Starting audio streaming with echo cancellation...');
+    logger.info('🔄 Starting audio streaming (echo cancellation + no comfort noise)...');
     
     const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
@@ -144,12 +142,11 @@ async function handleCallAnswered(callControlId, payload) {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 5000
+        timeout: 3000
       }
     );
     
-    logger.info('✅ Streaming started with echo cancellation!');
-    logger.info(`Response: ${JSON.stringify(response.data)}`);
+    logger.info('✅ Streaming started with FULL echo protection!');
     
   } catch (error) {
     logger.error(`❌ FAILED TO INITIALIZE CALL: ${error.message}`);
@@ -232,4 +229,3 @@ async function handleCallHangup(callControlId) {
 }
 
 module.exports = { handleWebhook };
-
