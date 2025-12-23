@@ -15,9 +15,10 @@ async function handleWebhook(req, res) {
     const payload = req.body?.data?.payload || {};
     const callControlId = payload?.call_control_id;
     
-    logger.info(`Event: ${eventType}`);
+    logger.info(`📡 Webhook Event: ${eventType}`);
     
     if (!callControlId && eventType !== 'call.hangup') {
+      logger.warn('⚠️ Missing call_control_id in webhook');
       return res.status(400).send('Missing call_control_id');
     }
     
@@ -31,7 +32,7 @@ async function handleWebhook(req, res) {
         return res.status(200).send('OK');
         
       case 'streaming.started':
-        logger.info('✓ Streaming started');
+        logger.info('✅ Streaming started successfully');
         return res.status(200).send('OK');
         
       case 'streaming.stopped':
@@ -43,59 +44,80 @@ async function handleWebhook(req, res) {
         return res.status(200).send('OK');
         
       default:
+        logger.info(`ℹ️ Unhandled event: ${eventType}`);
         return res.status(200).send('OK');
     }
     
   } catch (error) {
-    logger.error(`Webhook error: ${error.message}`);
+    logger.error(`❌ Webhook error: ${error.message}`);
+    logger.error(`Stack: ${error.stack}`);
     return res.status(500).send('Internal Server Error');
   }
 }
 
 async function handleCallInitiated(callControlId, payload) {
-  logger.info('📞 Call initiated');
+  logger.info('📞 CALL INITIATED');
   
-  const callerPhone = payload.from || payload.caller_id_number || null;
+  const callerPhone = payload.from || payload.caller_id_number || "Unknown";
   
-  if (callerPhone) {
-    logger.info(`📱 Caller: ${callerPhone}`);
-  }
+  logger.info(`📱 Incoming call from: ${callerPhone}`);
+  logger.info(`🆔 Call Control ID: ${callControlId}`);
   
   try {
-    await axios.post(
+    logger.info('🔄 Attempting to answer call...');
+    
+    const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
       {},
       {
         headers: {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 5000
       }
     );
     
-    logger.info('✓ Call answered');
+    logger.info('✅ Call answered successfully!');
+    logger.info(`Response: ${JSON.stringify(response.data)}`);
+    
   } catch (error) {
-    logger.error(`Failed to answer: ${error.message}`);
+    logger.error(`❌ FAILED TO ANSWER CALL: ${error.message}`);
+    if (error.response) {
+      logger.error(`Telnyx API Error: ${JSON.stringify(error.response.data)}`);
+      logger.error(`Status Code: ${error.response.status}`);
+    }
+    if (error.code) {
+      logger.error(`Error Code: ${error.code}`);
+    }
   }
 }
 
 async function handleCallAnswered(callControlId, payload) {
-  logger.info('✓ Call answered event');
+  logger.info('✅ CALL ANSWERED EVENT RECEIVED');
   
   try {
+    const callerPhone = payload.from || payload.caller_id_number || "Unknown";
+    logger.info(`📱 Caller phone: ${callerPhone}`);
+    
+    // Connect to OpenAI first
+    logger.info('🔄 Connecting to OpenAI...');
     await connectToOpenAI(callControlId);
+    logger.info('✅ OpenAI connection established');
     
-    const callerPhone = payload.from || payload.caller_id_number || null;
-    
+    // Store caller info in session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
       session.callerPhone = callerPhone;
       sessionStore.updateSession(callControlId, session);
-      logger.info(`📱 Stored: ${callerPhone}`);
+      logger.info(`💾 Session updated with caller: ${callerPhone}`);
+    } else {
+      logger.warn('⚠️ No session found for this call');
     }
     
     const streamUrl = `${RENDER_URL}/media-stream`;
+    logger.info(`🎙️ Stream URL: ${streamUrl}`);
     
     const streamingConfig = {
       stream_url: streamUrl,
@@ -110,23 +132,31 @@ async function handleCallAnswered(callControlId, payload) {
       }
     };
     
-    await axios.post(
+    logger.info('🔄 Starting audio streaming...');
+    
+    const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
       streamingConfig,
       {
         headers: {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 5000
       }
     );
     
-    logger.info('✓ Streaming started');
+    logger.info('✅ Streaming started successfully!');
+    logger.info(`Response: ${JSON.stringify(response.data)}`);
     
   } catch (error) {
-    logger.error(`Failed to initialize: ${error.message}`);
+    logger.error(`❌ FAILED TO INITIALIZE CALL: ${error.message}`);
     if (error.response) {
-      logger.error(`Telnyx error: ${JSON.stringify(error.response.data)}`);
+      logger.error(`Telnyx API Error: ${JSON.stringify(error.response.data)}`);
+      logger.error(`Status Code: ${error.response.status}`);
+    }
+    if (error.stack) {
+      logger.error(`Stack: ${error.stack}`);
     }
   }
 }
@@ -172,31 +202,32 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
+    logger.error(`Stack: ${error.stack}`);
     // Even if save fails, we tried - don't crash
   }
 }
 
 async function handleStreamingStopped(callControlId) {
   // DON'T save here - let call.hangup handle it
-  logger.info('✓ Streaming stopped - waiting for hangup event');
+  logger.info('🛑 Streaming stopped - waiting for hangup event');
 }
 
 async function handleCallHangup(callControlId) {
+  logger.info('📴 CALL HANGUP EVENT');
+  
   // ONLY SAVE HERE - single point of saving
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
   
   if (session?.ws?.readyState === 1) {
+    logger.info('🔌 Closing WebSocket connection...');
     session.ws.close();
   }
   
   sessionStore.deleteSession(callControlId);
-  logger.info('✓ Call ended and cleaned up');
+  logger.info('✅ Call ended and session cleaned up');
 }
 
 module.exports = { handleWebhook };
-
-
-
 
