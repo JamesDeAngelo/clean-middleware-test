@@ -4,7 +4,6 @@ const sessionStore = require('./utils/sessionStore');
 const { 
   buildSystemPrompt, 
   buildInitialRealtimePayload,
-  sendOpeningGreeting,
   sendAudioToOpenAI
 } = require('./openai');
 
@@ -21,7 +20,6 @@ async function connectToOpenAI(callId) {
       });
 
       let audioChunksSent = 0;
-      let currentAssistantMessage = "";
 
       ws.on('open', async () => {
         logger.info('✓ OpenAI connected');
@@ -40,14 +38,26 @@ async function connectToOpenAI(callId) {
         try {
           const msg = JSON.parse(data.toString());
           
-          // Handle audio from OpenAI
+          // Handle audio from OpenAI - SEND DIRECTLY BACK TO TELNYX
           if (msg.type === "response.audio.delta" && msg.delta) {
             const session = sessionStore.getSession(callId);
             
-            if (!session || !session.streamConnection || session.streamConnection.readyState !== 1) {
+            if (!session) {
+              logger.error(`❌ NO SESSION found for callId: ${callId}`);
               return;
             }
             
+            if (!session.streamConnection) {
+              logger.error(`❌ NO streamConnection in session`);
+              return;
+            }
+            
+            if (session.streamConnection.readyState !== 1) {
+              logger.error(`❌ streamConnection not ready. State: ${session.streamConnection.readyState}`);
+              return;
+            }
+            
+            // Send audio DIRECTLY back to Telnyx via WebSocket
             const audioPayload = {
               event: 'media',
               stream_sid: session.streamSid,
@@ -61,36 +71,12 @@ async function connectToOpenAI(callId) {
             audioChunksSent++;
             
             if (audioChunksSent % 20 === 0) {
-              logger.info(`📤 ${audioChunksSent} chunks sent`);
+              logger.info(`📤 Sent ${audioChunksSent} audio chunks to Telnyx`);
             }
           }
 
-          // Track AI transcript
           if (msg.type === "response.audio_transcript.delta") {
-            currentAssistantMessage += msg.delta;
-          }
-
-          if (msg.type === "response.audio_transcript.done") {
-            if (currentAssistantMessage.trim()) {
-              const message = currentAssistantMessage.trim();
-              sessionStore.addAssistantTranscript(callId, message);
-              
-              // Check if conversation is ending
-              const isEnding = message.toLowerCase().includes("take care") || 
-                              message.toLowerCase().includes("call you within") ||
-                              message.toLowerCase().includes("attorney will call");
-              
-              if (isEnding) {
-                logger.info(`🎬 Conversation ending detected`);
-                const session = sessionStore.getSession(callId);
-                if (session) {
-                  session.conversationComplete = true;
-                  sessionStore.updateSession(callId, session);
-                }
-              }
-              
-              currentAssistantMessage = "";
-            }
+            logger.info(`🤖 AI: "${msg.delta}"`);
           }
 
           if (msg.type === "input_audio_buffer.speech_started") {
@@ -101,15 +87,12 @@ async function connectToOpenAI(callId) {
             logger.info('🔇 User stopped');
           }
 
-          // Track user transcript
           if (msg.type === "conversation.item.input_audio_transcription.completed") {
-            if (msg.transcript && msg.transcript.trim()) {
-              sessionStore.addUserTranscript(callId, msg.transcript.trim());
-            }
+            logger.info(`👤 User: "${msg.transcript}"`);
           }
 
           if (msg.type === "response.done") {
-            logger.info(`✓ Response complete (${audioChunksSent} chunks)`);
+            logger.info(`✓ Response complete (sent ${audioChunksSent} audio chunks)`);
             audioChunksSent = 0;
           }
 
@@ -117,11 +100,15 @@ async function connectToOpenAI(callId) {
             logger.error(`❌ OpenAI error: ${JSON.stringify(msg.error)}`);
           }
 
-          if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - triggering greeting');
+          if (msg.type === "session.created") {
+            logger.info('✓ OpenAI session ready');
             setTimeout(() => {
-              sendOpeningGreeting(ws);
+              triggerGreeting(ws);
             }, 500);
+          }
+          
+          if (msg.type === "session.updated") {
+            logger.info(`✓ Session updated. Audio formats: in=${msg.session?.input_audio_format}, out=${msg.session?.output_audio_format}`);
           }
 
         } catch (err) {
@@ -145,24 +132,45 @@ async function connectToOpenAI(callId) {
   });
 }
 
+function triggerGreeting(ws) {
+  if (ws?.readyState !== 1) {
+    logger.error('Cannot trigger greeting - WebSocket not open');
+    return;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["text", "audio"],
+      instructions: "Say: Hi! This is Sarah from the law office. How can I help you today?"
+    }
+  }));
+  
+  logger.info('🎙️ Greeting triggered');
+}
+
 function attachTelnyxStream(callId, telnyxWs, streamSid) {
   const session = sessionStore.getSession(callId);
   
   if (!session) {
-    logger.error(`❌ No session for: ${callId}`);
+    logger.error(`❌ Cannot attach stream - No session for: ${callId}`);
     return;
   }
   
   session.streamConnection = telnyxWs;
   session.streamSid = streamSid;
   sessionStore.updateSession(callId, session);
-  logger.info(`✓ Stream attached`);
+  logger.info(`✓ Stream attached. WebSocket state: ${telnyxWs.readyState}`);
 }
 
 function forwardAudioToOpenAI(callId, audioBuffer) {
   const session = sessionStore.getSession(callId);
   
-  if (!session || !session.ws || session.ws.readyState !== 1) {
+  if (!session) {
+    return;
+  }
+  
+  if (!session.ws || session.ws.readyState !== 1) {
     return;
   }
   
@@ -174,6 +182,8 @@ module.exports = {
   attachTelnyxStream,
   forwardAudioToOpenAI
 };
+
+
 
 
 

@@ -34,25 +34,9 @@ app.get('/health', (req, res) => {
 app.post('/webhook/telnyx', handleWebhook);
 
 // Start the server
-server.listen(PORT, '0.0.0.0', async () => {
+server.listen(PORT, '0.0.0.0', () => {
   logger.info(`HTTP server listening on port ${PORT}`);
   logger.info(`WebSocket server ready at /media-stream`);
-  
-  // Safely test Airtable connection
-  try {
-    const { testAirtableConnection } = require('./airtable');
-    logger.info('🔍 Testing Airtable connection...');
-    const airtableConnected = await testAirtableConnection();
-    
-    if (airtableConnected) {
-      logger.info('✅ Airtable integration ready!');
-    } else {
-      logger.error('❌ Airtable connection failed - check your credentials');
-    }
-  } catch (error) {
-    logger.warn(`⚠️ Airtable module not loaded: ${error.message}`);
-    logger.warn('Server will run without Airtable integration');
-  }
 });
 
 // Graceful shutdown
@@ -62,4 +46,3 @@ process.on('SIGTERM', () => {
     logger.info('HTTP server closed');
   });
 });
-
