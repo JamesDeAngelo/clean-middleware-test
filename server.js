@@ -62,3 +62,4 @@ process.on('SIGTERM', () => {
     logger.info('HTTP server closed');
   });
 });
+
