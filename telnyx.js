@@ -119,12 +119,14 @@ async function handleCallAnswered(callControlId, payload) {
     const streamUrl = `${RENDER_URL}/media-stream`;
     logger.info(`🎙️ Stream URL: ${streamUrl}`);
     
+    // CRITICAL FIX: Enable echo cancellation in Telnyx streaming config
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'both_tracks',
+      stream_track: 'inbound_track',  // CHANGED: Only send caller audio, not AI's own voice
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
+      enable_echo_cancellation: true,  // NEW: Enable echo cancellation
       media_format: {
         codec: 'PCMU',
         sample_rate: 8000,
@@ -132,7 +134,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     };
     
-    logger.info('🔄 Starting audio streaming...');
+    logger.info('🔄 Starting audio streaming with echo cancellation...');
     
     const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/streaming_start`,
@@ -146,7 +148,7 @@ async function handleCallAnswered(callControlId, payload) {
       }
     );
     
-    logger.info('✅ Streaming started successfully!');
+    logger.info('✅ Streaming started with echo cancellation!');
     logger.info(`Response: ${JSON.stringify(response.data)}`);
     
   } catch (error) {

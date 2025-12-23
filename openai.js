@@ -80,6 +80,7 @@ DO:
 - Lead the conversation - never wait for them to volunteer info
 - ALWAYS wait for the user to finish speaking completely before responding
 - Be patient - let the caller take their time
+- Wait at least 2-3 seconds of silence before assuming they're done talking
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -91,6 +92,7 @@ DON'T:
 - Ask about truck type or details beyond "commercial truck yes/no"
 - Interrupt the caller while they're speaking
 - Rush the caller
+- Respond to echoes or background noise
 
 IF CALLER RAMBLES:
 - Let them finish their sentence completely
@@ -100,6 +102,11 @@ IF CALLER RAMBLES:
 IF CALLER ASKS YOU A QUESTION:
 - Brief answer: "An attorney will discuss that with you when they call back."
 - Return to your script: "Let me just get a few more details..."
+
+IF YOU HEAR ECHOES OR YOUR OWN VOICE:
+- Ignore it completely
+- Wait for the actual caller to speak
+- Do not respond to echoes
 
 YOUR TONE:
 - Warm but efficient
@@ -125,9 +132,9 @@ async function buildInitialRealtimePayload(systemPrompt) {
       },
       turn_detection: {
         type: "server_vad",
-        threshold: 0.5,              // FIXED: More balanced sensitivity
-        prefix_padding_ms: 300,      // FIXED: Less padding for more natural flow
-        silence_duration_ms: 1200,   // FIXED: 1.2 seconds - much better for natural conversation
+        threshold: 0.6,              // INCREASED: More aggressive filtering of background noise/echo
+        prefix_padding_ms: 800,      // INCREASED: Wait longer before considering speech started
+        silence_duration_ms: 2000,   // INCREASED: 2 full seconds of silence before AI responds
         create_response: true
       },
       temperature: 0.8,
@@ -200,6 +207,7 @@ CRITICAL RULES:
 
 IMPORTANT:
 - Only extract the CALLER'S information, not the agent Sarah
+- IGNORE any text that appears to be echoes or the AI repeating itself
 - If something wasn't mentioned or is unclear, leave that field EMPTY (empty string "")
 - Date must be YYYY-MM-DD format or empty
 - For Yes/No fields, use exactly "Yes" or "No" (not "yes", "YES", etc.)
