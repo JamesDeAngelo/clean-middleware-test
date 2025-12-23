@@ -122,9 +122,9 @@ async function buildInitialRealtimePayload(systemPrompt) {
       },
       turn_detection: {
         type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 3000,  // INCREASED from 1500ms to 3000ms for bad connections
+        threshold: 0.7,              // INCREASED: Higher = less sensitive to background noise
+        prefix_padding_ms: 500,      // INCREASED: More padding before detecting speech
+        silence_duration_ms: 4000,   // INCREASED: 4 full seconds of silence before responding
         create_response: true
       },
       temperature: 0.8,
@@ -287,4 +287,3 @@ module.exports = {
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
 };
-
