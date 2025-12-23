@@ -118,10 +118,13 @@ async function connectToOpenAI(callId) {
           }
 
           if (msg.type === "session.updated") {
-            logger.info('✓ Session configured - triggering greeting');
-            setTimeout(() => {
-              sendOpeningGreeting(ws);
-            }, 500);
+            logger.info('✓ Session configured - waiting for stream to fully connect');
+            // Mark that session is ready, but DON'T trigger greeting yet
+            const session = sessionStore.getSession(callId);
+            if (session) {
+              session.sessionReady = true;
+              sessionStore.updateSession(callId, session);
+            }
           }
 
         } catch (err) {
@@ -157,6 +160,32 @@ function attachTelnyxStream(callId, telnyxWs, streamSid) {
   session.streamSid = streamSid;
   sessionStore.updateSession(callId, session);
   logger.info(`✓ Stream attached`);
+  
+  // NOW trigger greeting after stream is fully connected AND session is ready
+  if (session.sessionReady && !session.greetingSent) {
+    logger.info('🎤 Stream ready - triggering greeting in 2 seconds...');
+    
+    // Wait 2 seconds for everything to stabilize
+    setTimeout(() => {
+      const currentSession = sessionStore.getSession(callId);
+      if (currentSession && currentSession.ws && !currentSession.greetingSent) {
+        // Clear any audio buffer before greeting
+        currentSession.ws.send(JSON.stringify({
+          type: "input_audio_buffer.clear"
+        }));
+        
+        // Wait 100ms after clearing buffer
+        setTimeout(() => {
+          const finalSession = sessionStore.getSession(callId);
+          if (finalSession && finalSession.ws) {
+            sendOpeningGreeting(finalSession.ws);
+            finalSession.greetingSent = true;
+            sessionStore.updateSession(callId, finalSession);
+          }
+        }, 100);
+      }
+    }, 2000);
+  }
 }
 
 function forwardAudioToOpenAI(callId, audioBuffer) {
@@ -166,7 +195,10 @@ function forwardAudioToOpenAI(callId, audioBuffer) {
     return;
   }
   
-  sendAudioToOpenAI(session.ws, audioBuffer);
+  // Only forward audio AFTER greeting has been sent
+  if (session.greetingSent) {
+    sendAudioToOpenAI(session.ws, audioBuffer);
+  }
 }
 
 module.exports = {
@@ -174,7 +206,6 @@ module.exports = {
   attachTelnyxStream,
   forwardAudioToOpenAI
 };
-
 
 
 

@@ -80,7 +80,7 @@ DO:
 - Lead the conversation - never wait for them to volunteer info
 - ALWAYS wait for the user to finish speaking completely before responding
 - Be patient - let the caller take their time
-- Wait at least 2-3 seconds of silence before assuming they're done talking
+- Wait at least 2 seconds of complete silence before assuming they're done talking
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -130,13 +130,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
       input_audio_transcription: {
         model: "whisper-1"
       },
-      turn_detection: {
-        type: "server_vad",
-        threshold: 0.6,              // INCREASED: More aggressive filtering of background noise/echo
-        prefix_padding_ms: 800,      // INCREASED: Wait longer before considering speech started
-        silence_duration_ms: 2000,   // INCREASED: 2 full seconds of silence before AI responds
-        create_response: true
-      },
+      turn_detection: null,  // CRITICAL: Disable automatic turn detection initially
       temperature: 0.8,
       max_response_output_tokens: 2048
     }
@@ -145,7 +139,7 @@ async function buildInitialRealtimePayload(systemPrompt) {
 
 /**
  * Trigger the AI to give its opening greeting naturally
- * Call this after session.updated event
+ * Call this after session.updated event AND stream is connected
  */
 function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
@@ -153,7 +147,7 @@ function sendOpeningGreeting(ws) {
     return;
   }
 
-  // Just trigger a response - let the AI naturally say its greeting from the system prompt
+  // Trigger greeting without turn detection
   ws.send(JSON.stringify({
     type: "response.create",
     response: { 
@@ -161,7 +155,26 @@ function sendOpeningGreeting(ws) {
     }
   }));
 
-  logger.info('📞 Triggering opening greeting');
+  logger.info('📞 Opening greeting triggered');
+  
+  // After greeting completes, enable turn detection (wait 8 seconds for greeting to finish)
+  setTimeout(() => {
+    if (ws?.readyState === 1) {
+      ws.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.6,
+            prefix_padding_ms: 800,
+            silence_duration_ms: 2000,
+            create_response: true
+          }
+        }
+      }));
+      logger.info('🎤 Turn detection enabled after greeting');
+    }
+  }, 8000);
 }
 
 /**
