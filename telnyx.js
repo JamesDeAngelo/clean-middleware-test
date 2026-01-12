@@ -66,7 +66,6 @@ async function handleCallInitiated(callControlId, payload) {
   try {
     logger.info('🔄 Answering call IMMEDIATELY...');
     
-    // ANSWER IMMEDIATELY - No delay
     const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
       {},
@@ -75,7 +74,7 @@ async function handleCallInitiated(callControlId, payload) {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 3000  // Reduced timeout for faster response
+        timeout: 3000
       }
     );
     
@@ -97,12 +96,10 @@ async function handleCallAnswered(callControlId, payload) {
     const callerPhone = payload.from || payload.caller_id_number || "Unknown";
     logger.info(`📱 Caller phone: ${callerPhone}`);
     
-    // Connect to OpenAI IMMEDIATELY
     logger.info('🔄 Connecting to OpenAI...');
     await connectToOpenAI(callControlId);
     logger.info('✅ OpenAI connection established');
     
-    // Store caller info in session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
@@ -116,15 +113,14 @@ async function handleCallAnswered(callControlId, payload) {
     const streamUrl = `${RENDER_URL}/media-stream`;
     logger.info(`🎙️ Stream URL: ${streamUrl}`);
     
-    // NUCLEAR FIX: Only send caller's audio + aggressive echo cancellation
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'inbound_track',        // ONLY caller audio - NO AI echo
+      stream_track: 'inbound_track',
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
-      enable_echo_cancellation: true,       // Enable echo cancellation
-      enable_comfort_noise: false,          // DISABLE comfort noise (stops hissing)
+      enable_echo_cancellation: true,
+      enable_comfort_noise: false,
       media_format: {
         codec: 'PCMU',
         sample_rate: 8000,
@@ -162,7 +158,6 @@ async function handleCallAnswered(callControlId, payload) {
 
 async function saveSessionDataBeforeCleanup(callControlId) {
   try {
-    // Check if already saved to prevent duplicates
     if (sessionStore.wasSaved(callControlId)) {
       logger.info(`⏭️ Already saved - skipping duplicate save`);
       return;
@@ -175,25 +170,23 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    // ALWAYS SAVE - even if no transcript or incomplete call
-    // Minimum requirement: phone number (always available)
-    const transcript = sessionStore.getFullTranscript(callControlId) || "";
+    // Get the full raw transcript for the lawyer
+    const rawTranscript = sessionStore.getFullTranscript(callControlId) || "";
     const callerPhone = session.callerPhone || "Unknown";
     
     logger.info(`💾 ALWAYS SAVING - Phone: ${callerPhone}`);
     
-    if (transcript.trim().length > 0) {
-      logger.info(`📋 Transcript (${transcript.length} chars):\n${transcript}`);
+    if (rawTranscript.trim().length > 0) {
+      logger.info(`📋 Raw Transcript (${rawTranscript.length} chars):\n${rawTranscript}`);
     } else {
       logger.info(`📋 No transcript - caller hung up immediately or didn't speak`);
     }
     
-    // Extract whatever data we can from the transcript
-    // If transcript is empty, this will return mostly empty fields but WILL have phone number
-    const leadData = await extractLeadDataFromTranscript(transcript, callerPhone);
+    // Extract structured data from the transcript
+    const leadData = await extractLeadDataFromTranscript(rawTranscript, callerPhone);
     
-    // ALWAYS save to Airtable - even with minimal data
-    await saveLeadToAirtable(leadData);
+    // CRITICAL: Pass the raw transcript to Airtable
+    await saveLeadToAirtable(leadData, rawTranscript);
     
     sessionStore.markAsSaved(callControlId);
     
@@ -202,19 +195,16 @@ async function saveSessionDataBeforeCleanup(callControlId) {
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
     logger.error(`Stack: ${error.stack}`);
-    // Even if save fails, we tried - don't crash
   }
 }
 
 async function handleStreamingStopped(callControlId) {
-  // DON'T save here - let call.hangup handle it
   logger.info('🛑 Streaming stopped - waiting for hangup event');
 }
 
 async function handleCallHangup(callControlId) {
   logger.info('📴 CALL HANGUP EVENT');
   
-  // ONLY SAVE HERE - single point of saving
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
