@@ -71,16 +71,16 @@ CONVERSATION RULES:
 DO:
 - After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
-- WAIT for the answer before moving to next question - BE VERY PATIENT
+- WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
 - Move immediately to the next question after acknowledgment
 - Show empathy only when discussing injuries: "I'm sorry to hear that."
 - Sound natural and conversational, not scripted
 - Use occasional filler words: "And...", "So...", "Alright..."
 - Lead the conversation - never wait for them to volunteer info
-- WAIT AT LEAST 3-4 SECONDS OF SILENCE before assuming they're done talking
-- Be patient with pauses - people think while talking
-- If someone pauses mid-sentence, WAIT - they're probably still thinking
+- ALWAYS wait for the user to finish speaking completely before responding
+- Be patient - let the caller take their time
+- Wait at least 2 seconds of complete silence before assuming they're done talking
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -90,10 +90,9 @@ DON'T:
 - Repeat questions if you already got an answer
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
-- INTERRUPT the caller while they're speaking - this is CRITICAL
-- Rush the caller or cut them off
+- Interrupt the caller while they're speaking
+- Rush the caller
 - Respond to echoes or background noise
-- Jump in during natural pauses - let them finish their complete thought
 
 IF CALLER RAMBLES:
 - Let them finish their sentence completely
@@ -114,7 +113,7 @@ YOUR TONE:
 - Confident and in control
 - Empathetic during injury discussion
 - Professional throughout
-- Patient and never rushed - LET THEM SPEAK FULLY
+- Patient and never rushed
 
 Remember: You are collecting information, not evaluating cases. Every caller gets the full intake, and attorneys review later.`;
 }
@@ -131,19 +130,24 @@ async function buildInitialRealtimePayload(systemPrompt) {
       input_audio_transcription: {
         model: "whisper-1"
       },
-      turn_detection: null,  // Disable initially
+      turn_detection: null,  // CRITICAL: Disable automatic turn detection initially
       temperature: 0.8,
       max_response_output_tokens: 2048
     }
   };
 }
 
+/**
+ * Trigger the AI to give its opening greeting naturally
+ * Call this after session.updated event AND stream is connected
+ */
 function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
     logger.error('Cannot send greeting - WebSocket not open');
     return;
   }
 
+  // Trigger greeting without turn detection
   ws.send(JSON.stringify({
     type: "response.create",
     response: { 
@@ -153,7 +157,7 @@ function sendOpeningGreeting(ws) {
 
   logger.info('📞 Opening greeting triggered');
   
-  // LONGER WAIT - Enable turn detection after greeting completes
+  // After greeting completes, enable turn detection (wait 8 seconds for greeting to finish)
   setTimeout(() => {
     if (ws?.readyState === 1) {
       ws.send(JSON.stringify({
@@ -161,18 +165,21 @@ function sendOpeningGreeting(ws) {
         session: {
           turn_detection: {
             type: "server_vad",
-            threshold: 0.5,                    // LOWER threshold (was 0.6) - less sensitive
-            prefix_padding_ms: 1000,           // INCREASED padding (was 800)
-            silence_duration_ms: 3000,         // MUCH LONGER silence (was 2000) - wait 3 full seconds
+            threshold: 0.6,
+            prefix_padding_ms: 800,
+            silence_duration_ms: 2000,
             create_response: true
           }
         }
       }));
-      logger.info('🎤 Turn detection enabled with PATIENT settings (3 second silence)');
+      logger.info('🎤 Turn detection enabled after greeting');
     }
   }, 8000);
 }
 
+/**
+ * Extract structured data from conversation transcript
+ */
 async function extractLeadDataFromTranscript(transcript, callerPhone) {
   const today = new Date();
   const todayFormatted = today.toISOString().split('T')[0];

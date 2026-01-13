@@ -170,22 +170,20 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    // Get the full raw transcript for the lawyer
-    const rawTranscript = sessionStore.getFullTranscript(callControlId) || "";
+    const rawTranscript = sessionStore.getFullTranscript(callControlId) || "";  // ONLY CHANGE: Get transcript
     const callerPhone = session.callerPhone || "Unknown";
     
     logger.info(`💾 ALWAYS SAVING - Phone: ${callerPhone}`);
     
     if (rawTranscript.trim().length > 0) {
-      logger.info(`📋 Raw Transcript (${rawTranscript.length} chars):\n${rawTranscript}`);
+      logger.info(`📋 Transcript (${rawTranscript.length} chars):\n${rawTranscript}`);
     } else {
       logger.info(`📋 No transcript - caller hung up immediately or didn't speak`);
     }
     
-    // Extract structured data from the transcript
     const leadData = await extractLeadDataFromTranscript(rawTranscript, callerPhone);
     
-    // CRITICAL: Pass the raw transcript to Airtable
+    // ONLY CHANGE: Pass rawTranscript as second parameter
     await saveLeadToAirtable(leadData, rawTranscript);
     
     sessionStore.markAsSaved(callControlId);
