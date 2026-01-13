@@ -7,41 +7,10 @@ const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Lead Contacts';
 const AIRTABLE_API_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE_NAME)}`;
 
 /**
- * Determine if lead is qualified based on PI law criteria
- */
-function qualifyLead(leadData) {
-  let score = 0;
-  
-  // Commercial truck = BIG MONEY (40 points)
-  if (leadData.wasCommercialTruckInvolved === "Yes") score += 40;
-  
-  // Medical treatment = DAMAGES (30 points)
-  if (leadData.wereTreatedByDoctorOrHospital === "Yes") score += 30;
-  
-  // Has injuries (15 points)
-  if (leadData.injuriesSustained && leadData.injuriesSustained.trim()) score += 15;
-  
-  // Police report (10 points)
-  if (leadData.policeReportFiled === "Yes") score += 10;
-  
-  // Recent accident (5 points)
-  if (leadData.dateOfAccident) {
-    const days = Math.floor((new Date() - new Date(leadData.dateOfAccident)) / 86400000);
-    if (days <= 180) score += 5;
-  }
-  
-  // Return qualification level
-  if (score >= 75) return "Highly Qualified";
-  if (score >= 50) return "Qualified";
-  if (score >= 30) return "Maybe Qualified";
-  return "Not Qualified";
-}
-
-/**
  * Save lead data to Airtable with retry logic
  */
-async function saveLeadToAirtable(leadData, rawTranscript = "", retries = 3) {
-  // Build fields object
+async function saveLeadToAirtable(leadData, retries = 3) {
+  // Build fields object, EXCLUDING empty date fields
   const fields = {
     "Name": leadData.name || "",
     "Phone Number": leadData.phoneNumber || "",
@@ -53,18 +22,12 @@ async function saveLeadToAirtable(leadData, rawTranscript = "", retries = 3) {
     "Were You Treated by a Doctor or Hospital?": leadData.wereTreatedByDoctorOrHospital || ""
   };
 
-  // Only add Date of Accident if it has a value
+  // CRITICAL FIX: Only add Date of Accident if it has a value
+  // Airtable Date fields CANNOT accept empty strings
   if (leadData.dateOfAccident && leadData.dateOfAccident.trim() !== "") {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
-  
-  // NEW FIELDS - Add raw transcript if available
-  if (rawTranscript && rawTranscript.trim() !== "") {
-    fields["Raw Transcript (input)"] = rawTranscript;  // CHANGE THIS TO MATCH YOUR EXACT FIELD NAME
-  }
-  
-  // NEW FIELDS - Add qualification status
-  fields["qualified?"] = qualifyLead(leadData);  // CHANGE THIS TO MATCH YOUR EXACT FIELD NAME
+  // If date is empty, we simply DON'T include the field at all
 
   const payload = { fields };
 
@@ -135,6 +98,7 @@ async function testAirtableConnection() {
 module.exports = {
   saveLeadToAirtable,
   testAirtableConnection
-};                                                                                  
+};
+
 
 
