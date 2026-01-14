@@ -28,16 +28,24 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // ADD MISSING FIELDS
-  // Raw Transcript (long text) - the full conversation transcript
+  // ADD MISSING FIELDS - TEMPORARILY DISABLED UNTIL WE GET EXACT FIELD NAMES
+  // Commenting out Raw Transcript fields until we confirm exact Airtable field names
+  
+  /*
   if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
-    fields["Raw Transcript"] = leadData.rawTranscript;
+    const cleanTranscript = leadData.rawTranscript
+      .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove control characters
+      .trim();
+    fields["Raw Transcript"] = cleanTranscript;
   }
 
-  // Raw Transcript (Input) (long text) - user input only transcript
   if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
-    fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
+    const cleanInputTranscript = leadData.rawTranscriptInput
+      .replace(/[\x00-\x1F\x7F-\x9F]/g, '')
+      .trim();
+    fields["Raw Transcript (Input)"] = cleanInputTranscript;
   }
+  */
 
   // Qualified? (single select) - automatically set based on data completeness
   if (leadData.qualified) {
