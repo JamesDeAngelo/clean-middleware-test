@@ -178,7 +178,6 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     // ALWAYS SAVE - even if no transcript or incomplete call
     // Minimum requirement: phone number (always available)
     const transcript = sessionStore.getFullTranscript(callControlId) || "";
-    const userTranscript = sessionStore.getUserTranscript(callControlId) || "";
     const callerPhone = session.callerPhone || "Unknown";
     
     logger.info(`💾 ALWAYS SAVING - Phone: ${callerPhone}`);
@@ -195,7 +194,7 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     
     // ADD MISSING FIELDS FOR AIRTABLE
     leadData.rawTranscript = transcript; // Full conversation (both AI and user)
-    leadData.rawTranscriptInput = userTranscript; // User input only
+    leadData.rawTranscriptInput = transcript; // For now, use same transcript (we'll filter AI parts later if needed)
     
     // Determine if qualified based on data completeness
     const hasName = leadData.name && leadData.name.trim() !== "";
