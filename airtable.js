@@ -28,20 +28,20 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // ADD MISSING FIELDS
-  
-  // Raw Transcript (long text) - the full conversation transcript
+  // TEMPORARILY DISABLED - Raw Transcript field is causing errors
+  // The field name or type in Airtable might be wrong
+  // TODO: Check exact field name in Airtable
+  /*
   if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
     fields["Raw Transcript"] = leadData.rawTranscript;
   }
 
-  // Raw Transcript (Input) (long text) - user input only transcript  
   if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
     fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
   }
+  */
 
   // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
-  // Make sure these options exist in Airtable: Qualified, Needs Review, Unqualified
   if (leadData.qualified) {
     fields["Qualified?"] = leadData.qualified;
   }
