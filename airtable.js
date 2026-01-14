@@ -47,10 +47,13 @@ async function saveLeadToAirtable(leadData, retries = 3) {
   }
   */
 
-  // Qualified? (single select) - automatically set based on data completeness
+  // Qualified? - COMMENTED OUT UNTIL YOU ADD THE OPTIONS TO AIRTABLE
+  // Go to Airtable, click "Qualified?" field, add these options: Qualified, Needs Review, Unqualified
+  /*
   if (leadData.qualified) {
     fields["Qualified?"] = leadData.qualified;
   }
+  */
 
   // Note: "Last Modified" is a last modified time field - Airtable handles this automatically
   // We don't need to send it, it updates on its own
