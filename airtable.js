@@ -28,32 +28,25 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // ADD MISSING FIELDS - TEMPORARILY DISABLED UNTIL WE GET EXACT FIELD NAMES
-  // Commenting out Raw Transcript fields until we confirm exact Airtable field names
+  // ADD MISSING FIELDS
   
-  /*
+  // Raw Transcript (long text) - the full conversation transcript
   if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
-    const cleanTranscript = leadData.rawTranscript
-      .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove control characters
-      .trim();
-    fields["Raw Transcript"] = cleanTranscript;
+    fields["Raw Transcript"] = leadData.rawTranscript;
   }
 
+  // Raw Transcript (Input) (long text) - user input only transcript  
   if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
-    const cleanInputTranscript = leadData.rawTranscriptInput
-      .replace(/[\x00-\x1F\x7F-\x9F]/g, '')
-      .trim();
-    fields["Raw Transcript (Input)"] = cleanInputTranscript;
+    fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
   }
-  */
 
-  // Qualified? - COMMENTED OUT UNTIL YOU ADD THE OPTIONS TO AIRTABLE
-  // Go to Airtable, click "Qualified?" field, add these options: Qualified, Needs Review, Unqualified
-  /*
+  // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
+  // Make sure these options exist in Airtable: Qualified, Needs Review, Unqualified
   if (leadData.qualified) {
     fields["Qualified?"] = leadData.qualified;
   }
-  */
+  
+  // Note: "Last Modified" is automatic in Airtable - don't send it
 
   // Note: "Last Modified" is a last modified time field - Airtable handles this automatically
   // We don't need to send it, it updates on its own
