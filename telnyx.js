@@ -178,6 +178,7 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     // ALWAYS SAVE - even if no transcript or incomplete call
     // Minimum requirement: phone number (always available)
     const transcript = sessionStore.getFullTranscript(callControlId) || "";
+    const userTranscript = sessionStore.getUserTranscript(callControlId) || "";
     const callerPhone = session.callerPhone || "Unknown";
     
     logger.info(`💾 ALWAYS SAVING - Phone: ${callerPhone}`);
@@ -192,12 +193,31 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     // If transcript is empty, this will return mostly empty fields but WILL have phone number
     const leadData = await extractLeadDataFromTranscript(transcript, callerPhone);
     
+    // ADD MISSING FIELDS FOR AIRTABLE
+    leadData.rawTranscript = transcript; // Full conversation (both AI and user)
+    leadData.rawTranscriptInput = userTranscript; // User input only
+    
+    // Determine if qualified based on data completeness
+    const hasName = leadData.name && leadData.name.trim() !== "";
+    const hasDate = leadData.dateOfAccident && leadData.dateOfAccident.trim() !== "";
+    const hasLocation = leadData.accidentLocation && leadData.accidentLocation.trim() !== "";
+    const hasCommercialTruck = leadData.wasCommercialTruckInvolved === "Yes";
+    
+    // Qualified if they have: name, date, location, and it was a commercial truck
+    if (hasName && hasDate && hasLocation && hasCommercialTruck) {
+      leadData.qualified = "Qualified";
+    } else if (hasName || hasDate || hasLocation) {
+      leadData.qualified = "Needs Review";
+    } else {
+      leadData.qualified = "Unqualified";
+    }
+    
     // ALWAYS save to Airtable - even with minimal data
     await saveLeadToAirtable(leadData);
     
     sessionStore.markAsSaved(callControlId);
     
-    logger.info(`✅ SAVED TO AIRTABLE - Phone: ${callerPhone}, Name: ${leadData.name || 'Not provided'}`);
+    logger.info(`✅ SAVED TO AIRTABLE - Phone: ${callerPhone}, Name: ${leadData.name || 'Not provided'}, Qualified: ${leadData.qualified}`);
     
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
