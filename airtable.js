@@ -27,7 +27,25 @@ async function saveLeadToAirtable(leadData, retries = 3) {
   if (leadData.dateOfAccident && leadData.dateOfAccident.trim() !== "") {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
-  // If date is empty, we simply DON'T include the field at all
+
+  // ADD MISSING FIELDS
+  // Raw Transcript (long text) - the full conversation transcript
+  if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
+    fields["Raw Transcript"] = leadData.rawTranscript;
+  }
+
+  // Raw Transcript (Input) (long text) - user input only transcript
+  if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
+    fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
+  }
+
+  // Qualified? (single select) - automatically set based on data completeness
+  if (leadData.qualified) {
+    fields["Qualified?"] = leadData.qualified;
+  }
+
+  // Note: "Last Modified" is a last modified time field - Airtable handles this automatically
+  // We don't need to send it, it updates on its own
 
   const payload = { fields };
 
@@ -99,6 +117,3 @@ module.exports = {
   saveLeadToAirtable,
   testAirtableConnection
 };
-
-
-
