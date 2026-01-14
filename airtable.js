@@ -28,15 +28,27 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // NEW TRANSCRIPT FIELD
+  // ADD TRANSCRIPT FIELDS
+  // Raw Transcript (long text) - the full conversation transcript
   if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
-    let cleanTranscript = leadData.rawTranscript
+    // Clean the transcript - remove any weird characters that might break Airtable
+    const cleanTranscript = leadData.rawTranscript
       .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Remove control characters
       .trim();
     
     if (cleanTranscript.length > 0) {
-      fields["Transcript"] = cleanTranscript;
-      logger.info(`📝 Adding Transcript (${cleanTranscript.length} chars)`);
+      fields["Raw Transcript"] = cleanTranscript;
+    }
+  }
+
+  // Raw Transcript (Input) (long text) - user input only transcript  
+  if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
+    const cleanInputTranscript = leadData.rawTranscriptInput
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+      .trim();
+    
+    if (cleanInputTranscript.length > 0) {
+      fields["Raw Transcript (Input)"] = cleanInputTranscript;
     }
   }
 
@@ -45,7 +57,10 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Qualified?"] = leadData.qualified;
   }
   
-  // Note: "Last Modified" is automatic in Airtable
+  // Note: "Last Modified" is automatic in Airtable - don't send it
+
+  // Note: "Last Modified" is a last modified time field - Airtable handles this automatically
+  // We don't need to send it, it updates on its own
 
   const payload = { fields };
 
