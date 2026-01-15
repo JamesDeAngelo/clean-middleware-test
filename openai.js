@@ -167,13 +167,13 @@ function sendOpeningGreeting(ws) {
           turn_detection: {
             type: "server_vad",
             threshold: 0.5,              // LOWERED from 0.6 - less sensitive
-            prefix_padding_ms: 1000,     // INCREASED from 800ms - more buffer before speech
-            silence_duration_ms: 3000,   // INCREASED from 2000ms - wait 3 seconds before responding
+            prefix_padding_ms: 900,      // Balanced - not too much delay
+            silence_duration_ms: 2000,   // 2 seconds - sweet spot
             create_response: true
           }
         }
       }));
-      logger.info('🎤 Turn detection enabled with PATIENT settings');
+      logger.info('🎤 Turn detection enabled with BALANCED settings');
     }
   }, 8000);
 }
