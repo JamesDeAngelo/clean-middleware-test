@@ -66,7 +66,6 @@ async function handleCallInitiated(callControlId, payload) {
   try {
     logger.info('🔄 Answering call IMMEDIATELY...');
     
-    // ANSWER IMMEDIATELY - No delay
     const response = await axios.post(
       `${TELNYX_API_URL}/${callControlId}/actions/answer`,
       {},
@@ -75,7 +74,7 @@ async function handleCallInitiated(callControlId, payload) {
           'Authorization': `Bearer ${TELNYX_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        timeout: 3000  // Reduced timeout for faster response
+        timeout: 3000
       }
     );
     
@@ -97,12 +96,10 @@ async function handleCallAnswered(callControlId, payload) {
     const callerPhone = payload.from || payload.caller_id_number || "Unknown";
     logger.info(`📱 Caller phone: ${callerPhone}`);
     
-    // Connect to OpenAI IMMEDIATELY
     logger.info('🔄 Connecting to OpenAI...');
     await connectToOpenAI(callControlId);
     logger.info('✅ OpenAI connection established');
     
-    // Store caller info in session
     const session = sessionStore.getSession(callControlId);
     if (session) {
       session.callControlId = callControlId;
@@ -116,15 +113,14 @@ async function handleCallAnswered(callControlId, payload) {
     const streamUrl = `${RENDER_URL}/media-stream`;
     logger.info(`🎙️ Stream URL: ${streamUrl}`);
     
-    // NUCLEAR FIX: Only send caller's audio + aggressive echo cancellation
     const streamingConfig = {
       stream_url: streamUrl,
-      stream_track: 'inbound_track',        // ONLY caller audio - NO AI echo
+      stream_track: 'inbound_track',
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
       enable_dialogflow: false,
-      enable_echo_cancellation: true,       // Enable echo cancellation
-      enable_comfort_noise: false,          // DISABLE comfort noise (stops hissing)
+      enable_echo_cancellation: true,
+      enable_comfort_noise: false,
       media_format: {
         codec: 'PCMU',
         sample_rate: 8000,
@@ -162,7 +158,6 @@ async function handleCallAnswered(callControlId, payload) {
 
 async function saveSessionDataBeforeCleanup(callControlId) {
   try {
-    // Check if already saved to prevent duplicates
     if (sessionStore.wasSaved(callControlId)) {
       logger.info(`⏭️ Already saved - skipping duplicate save`);
       return;
@@ -175,8 +170,6 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       return;
     }
     
-    // ALWAYS SAVE - even if no transcript or incomplete call
-    // Minimum requirement: phone number (always available)
     const transcript = sessionStore.getFullTranscript(callControlId) || "";
     const callerPhone = session.callerPhone || "Unknown";
     
@@ -188,26 +181,20 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       logger.info(`📋 No transcript - caller hung up immediately or didn't speak`);
     }
     
-    // Extract whatever data we can from the transcript
-    // If transcript is empty, this will return mostly empty fields but WILL have phone number
     const leadData = await extractLeadDataFromTranscript(transcript, callerPhone);
     
-    // ADD MISSING FIELDS FOR AIRTABLE
-    leadData.rawTranscript = transcript; // Full conversation (both AI and user)
-    leadData.rawTranscriptInput = transcript; // For now, use same transcript
+    leadData.rawTranscript = transcript;
+    leadData.rawTranscriptInput = transcript;
     
-    // Generate AI summary using OpenAI
     logger.info('🤖 Generating call summary with OpenAI...');
     const callSummary = await generateCallSummary(leadData, transcript);
-    leadData.callSummary = callSummary; (we'll filter AI parts later if needed)
+    leadData.callSummary = callSummary;
     
-    // Determine if qualified based on data completeness
     const hasName = leadData.name && leadData.name.trim() !== "";
     const hasDate = leadData.dateOfAccident && leadData.dateOfAccident.trim() !== "";
     const hasLocation = leadData.accidentLocation && leadData.accidentLocation.trim() !== "";
     const hasCommercialTruck = leadData.wasCommercialTruckInvolved === "Yes";
     
-    // Qualified if they have: name, date, location, and it was a commercial truck
     if (hasName && hasDate && hasLocation && hasCommercialTruck) {
       leadData.qualified = "Qualified";
     } else if (hasName || hasDate || hasLocation) {
@@ -216,7 +203,6 @@ async function saveSessionDataBeforeCleanup(callControlId) {
       leadData.qualified = "Unqualified";
     }
     
-    // ALWAYS save to Airtable - even with minimal data
     await saveLeadToAirtable(leadData);
     
     sessionStore.markAsSaved(callControlId);
@@ -226,19 +212,16 @@ async function saveSessionDataBeforeCleanup(callControlId) {
   } catch (error) {
     logger.error(`❌ Save failed: ${error.message}`);
     logger.error(`Stack: ${error.stack}`);
-    // Even if save fails, we tried - don't crash
   }
 }
 
 async function handleStreamingStopped(callControlId) {
-  // DON'T save here - let call.hangup handle it
   logger.info('🛑 Streaming stopped - waiting for hangup event');
 }
 
 async function handleCallHangup(callControlId) {
   logger.info('📴 CALL HANGUP EVENT');
   
-  // ONLY SAVE HERE - single point of saving
   await saveSessionDataBeforeCleanup(callControlId);
   
   const session = sessionStore.getSession(callControlId);
