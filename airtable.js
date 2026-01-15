@@ -28,20 +28,31 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // TEMPORARILY DISABLED - Raw Transcript field is causing errors
-  // The field name or type in Airtable might be wrong
-  // TODO: Check exact field name in Airtable
-  /*
+  // ADD TRANSCRIPT FIELDS
+  // Raw Transcript (long text) - the full conversation transcript
   if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
-    fields["Raw Transcript"] = leadData.rawTranscript;
+    // Clean the transcript - remove any weird characters that might break Airtable
+    const cleanTranscript = leadData.rawTranscript
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Remove control characters
+      .trim();
+    
+    if (cleanTranscript.length > 0) {
+      fields["Raw Transcript"] = cleanTranscript;
+    }
   }
 
+  // Raw Transcript (Input) (long text) - user input only transcript  
   if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
-    fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
+    const cleanInputTranscript = leadData.rawTranscriptInput
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+      .trim();
+    
+    if (cleanInputTranscript.length > 0) {
+      fields["Raw Transcript (Input)"] = cleanInputTranscript;
+    }
   }
-  */
 
-  // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
+  // Qualified? (single select)
   if (leadData.qualified) {
     fields["Qualified?"] = leadData.qualified;
   }

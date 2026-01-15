@@ -2,7 +2,7 @@ const logger = require('./utils/logger');
 const sessionStore = require('./utils/sessionStore');
 const { connectToOpenAI } = require('./websocket');
 const { saveLeadToAirtable } = require('./airtable');
-const { extractLeadDataFromTranscript } = require('./openai');
+const { extractLeadDataFromTranscript, generateCallSummary } = require('./openai');
 const axios = require('axios');
 
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY;
@@ -194,7 +194,12 @@ async function saveSessionDataBeforeCleanup(callControlId) {
     
     // ADD MISSING FIELDS FOR AIRTABLE
     leadData.rawTranscript = transcript; // Full conversation (both AI and user)
-    leadData.rawTranscriptInput = transcript; // For now, use same transcript (we'll filter AI parts later if needed)
+    leadData.rawTranscriptInput = transcript; // For now, use same transcript
+    
+    // Generate AI summary using OpenAI
+    logger.info('🤖 Generating call summary with OpenAI...');
+    const callSummary = await generateCallSummary(leadData, transcript);
+    leadData.callSummary = callSummary; (we'll filter AI parts later if needed)
     
     // Determine if qualified based on data completeness
     const hasName = leadData.name && leadData.name.trim() !== "";
