@@ -33,6 +33,12 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Transcript"] = leadData.transcript;
   }
 
+  // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
+  // Options: "Qualified", "Needs Review", "Unqualified"
+  if (leadData.qualified) {
+    fields["Qualified?"] = leadData.qualified;
+  }
+
   // TEMPORARILY DISABLED - Raw Transcript field is causing errors
   // The field name or type in Airtable might be wrong
   // TODO: Check exact field name in Airtable
@@ -45,11 +51,6 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
   }
   */
-
-  // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
-  if (leadData.qualified) {
-    fields["Qualified?"] = leadData.qualified;
-  }
   
   // Note: "Last Modified" is automatic in Airtable - don't send it
 
