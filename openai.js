@@ -71,7 +71,7 @@ CONVERSATION RULES:
 DO:
 - After caller responds to your greeting, give brief empathetic acknowledgment before starting questions
 - Ask one question at a time
-- WAIT for the answer before moving to next question - BE VERY PATIENT
+- WAIT for the answer before moving to next question
 - Use brief acknowledgments: "Okay." "Got it." "Alright." "I see."
 - Move immediately to the next question after acknowledgment
 - Show empathy only when discussing injuries: "I'm sorry to hear that."
@@ -79,8 +79,8 @@ DO:
 - Use occasional filler words: "And...", "So...", "Alright..."
 - Lead the conversation - never wait for them to volunteer info
 - ALWAYS wait for the user to finish speaking completely before responding
-- Be EXTREMELY patient - let the caller take their time - wait at least 3-4 seconds of complete silence
-- NEVER interrupt the caller while they're speaking
+- Be patient - let the caller take their time
+- Wait at least 2 seconds of complete silence before assuming they're done talking
 
 DON'T:
 - Ask follow-up questions beyond the required list
@@ -91,9 +91,8 @@ DON'T:
 - Use overly formal language
 - Ask about truck type or details beyond "commercial truck yes/no"
 - Interrupt the caller while they're speaking
-- Rush the caller - BE PATIENT
+- Rush the caller
 - Respond to echoes or background noise
-- Move to the next question until you hear their full answer
 
 IF CALLER RAMBLES:
 - Let them finish their sentence completely
@@ -166,14 +165,14 @@ function sendOpeningGreeting(ws) {
         session: {
           turn_detection: {
             type: "server_vad",
-            threshold: 0.5,              // LOWERED from 0.6 - less sensitive
-            prefix_padding_ms: 900,      // Balanced - not too much delay
-            silence_duration_ms: 2000,   // 2 seconds - sweet spot
+            threshold: 0.6,
+            prefix_padding_ms: 800,
+            silence_duration_ms: 2000,
             create_response: true
           }
         }
       }));
-      logger.info('🎤 Turn detection enabled with BALANCED settings');
+      logger.info('🎤 Turn detection enabled after greeting');
     }
   }, 8000);
 }
@@ -272,61 +271,6 @@ Return ONLY the JSON object, no other text.`;
   }
 }
 
-/**
- * Generate a professional call summary using OpenAI
- */
-async function generateCallSummary(leadData, transcript) {
-  const summaryPrompt = `You are a legal assistant summarizing a truck accident intake call for a personal injury attorney.
-
-CALL DATA:
-- Name: ${leadData.name || 'Not provided'}
-- Phone: ${leadData.phoneNumber || 'Not provided'}
-- Date of Accident: ${leadData.dateOfAccident || 'Not provided'}
-- Location: ${leadData.accidentLocation || 'Not provided'}
-- Commercial Truck Involved: ${leadData.wasCommercialTruckInvolved || 'Not provided'}
-- Saw Doctor: ${leadData.wereTreatedByDoctorOrHospital || 'Not provided'}
-- Injuries: ${leadData.injuriesSustained || 'Not provided'}
-- Police Report: ${leadData.policeReportFiled || 'Not provided'}
-
-FULL TRANSCRIPT:
-${transcript}
-
-Create a brief, professional summary (3-4 sentences max) that tells the attorney:
-1. What happened (accident type, when, where)
-2. Key qualification factors (commercial truck? injuries? medical treatment?)
-3. Any red flags or missing information
-
-Keep it concise and attorney-focused. No fluff.`;
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'user', content: summaryPrompt }
-        ],
-        temperature: 0.3,
-        max_tokens: 200
-      })
-    });
-
-    const data = await response.json();
-    const summary = data.choices[0].message.content.trim();
-    
-    logger.info(`📝 Generated call summary (${summary.length} chars)`);
-    return summary;
-
-  } catch (error) {
-    logger.error(`❌ Summary generation failed: ${error.message}`);
-    return "Summary generation failed. Please review transcript.";
-  }
-}
-
 function sendTextToOpenAI(ws, text) {
   if (ws?.readyState !== 1) {
     logger.error('Cannot send text - WebSocket not open');
@@ -365,6 +309,5 @@ module.exports = {
   sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
-  extractLeadDataFromTranscript,
-  generateCallSummary
+  extractLeadDataFromTranscript
 };
