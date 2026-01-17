@@ -311,28 +311,3 @@ module.exports = {
   sendAudioToOpenAI,
   extractLeadDataFromTranscript
 };
-
-package-lock.json
-(it’s too long, just look on the shit) 
-
-package.json
-{
-  "name": "middleware-test",
-  "version": "1.0.0",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.6.1",
-    "express": "^4.21.2",
-    "pino": "^9.0.0",
-    "pino-pretty": "^11.0.0",
-    "ws": "^8.18.3"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
-  }
-}
