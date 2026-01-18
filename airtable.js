@@ -28,25 +28,16 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // TEMPORARILY DISABLED - Raw Transcript field is causing errors
-  // The field name or type in Airtable might be wrong
-  // TODO: Check exact field name in Airtable
-  /*
-  if (leadData.rawTranscript && leadData.rawTranscript.trim() !== "") {
-    fields["Raw Transcript"] = leadData.rawTranscript;
+  // NEW: Add Transcript field (long text)
+  if (leadData.transcript && leadData.transcript.trim() !== "") {
+    fields["Transcript"] = leadData.transcript;
   }
 
-  if (leadData.rawTranscriptInput && leadData.rawTranscriptInput.trim() !== "") {
-    fields["Raw Transcript (Input)"] = leadData.rawTranscriptInput;
-  }
-  */
-
-  // Qualified? (single select) - ONLY WORKS IF YOU ADDED THE 3 OPTIONS IN AIRTABLE
-  if (leadData.qualified) {
+  // NEW: Add Qualified? field (single select)
+  // Only send if it has a valid value from the 3 options
+  if (leadData.qualified && ["Qualified", "Needs Review", "Unqualified"].includes(leadData.qualified)) {
     fields["Qualified?"] = leadData.qualified;
   }
-  
-  // Note: "Last Modified" is automatic in Airtable - don't send it
 
   // Note: "Last Modified" is a last modified time field - Airtable handles this automatically
   // We don't need to send it, it updates on its own
@@ -121,5 +112,3 @@ module.exports = {
   saveLeadToAirtable,
   testAirtableConnection
 };
-
-
