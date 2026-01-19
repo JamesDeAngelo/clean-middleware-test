@@ -28,12 +28,17 @@ async function saveLeadToAirtable(leadData, retries = 3) {
     fields["Date of Accident"] = leadData.dateOfAccident;
   }
 
-  // NEW: Add Transcript field (long text)
+  // Add Transcript field (long text)
   if (leadData.transcript && leadData.transcript.trim() !== "") {
     fields["Transcript"] = leadData.transcript;
   }
 
-  // NEW: Add Qualified? field (single select)
+  // Add Call Summary field (long text)
+  if (leadData.callSummary && leadData.callSummary.trim() !== "") {
+    fields["Call Summary"] = leadData.callSummary;
+  }
+
+  // Add Qualified? field (single select)
   // Only send if it has a valid value from the 3 options
   if (leadData.qualified && ["Qualified", "Needs Review", "Unqualified"].includes(leadData.qualified)) {
     fields["Qualified?"] = leadData.qualified;

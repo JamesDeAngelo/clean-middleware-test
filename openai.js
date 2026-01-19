@@ -130,24 +130,19 @@ async function buildInitialRealtimePayload(systemPrompt) {
       input_audio_transcription: {
         model: "whisper-1"
       },
-      turn_detection: null,  // CRITICAL: Disable automatic turn detection initially
+      turn_detection: null,
       temperature: 0.8,
       max_response_output_tokens: 2048
     }
   };
 }
 
-/**
- * Trigger the AI to give its opening greeting naturally
- * Call this after session.updated event AND stream is connected
- */
 function sendOpeningGreeting(ws) {
   if (ws?.readyState !== 1) {
     logger.error('Cannot send greeting - WebSocket not open');
     return;
   }
 
-  // Trigger greeting without turn detection
   ws.send(JSON.stringify({
     type: "response.create",
     response: { 
@@ -157,7 +152,6 @@ function sendOpeningGreeting(ws) {
 
   logger.info('📞 Opening greeting triggered');
   
-  // After greeting completes, enable turn detection (wait 8 seconds for greeting to finish)
   setTimeout(() => {
     if (ws?.readyState === 1) {
       ws.send(JSON.stringify({
@@ -177,9 +171,6 @@ function sendOpeningGreeting(ws) {
   }, 8000);
 }
 
-/**
- * Extract structured data from conversation transcript
- */
 async function extractLeadDataFromTranscript(transcript, callerPhone) {
   const today = new Date();
   const todayFormatted = today.toISOString().split('T')[0];
@@ -271,6 +262,54 @@ Return ONLY the JSON object, no other text.`;
   }
 }
 
+async function generateCallSummary(transcript) {
+  if (!transcript || transcript.trim().length === 0) {
+    return "No conversation - caller hung up immediately or did not speak.";
+  }
+
+  const summaryPrompt = `You are a legal intake assistant summarizing a truck accident call.
+
+Transcript:
+${transcript}
+
+Generate a CONCISE call summary (2-4 sentences) that includes:
+- What happened (type of accident)
+- Key injuries mentioned
+- Any important details (date, location, medical treatment)
+
+Keep it professional and brief. Focus on facts only.
+
+Return ONLY the summary text, no JSON, no formatting.`;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'user', content: summaryPrompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 200
+      })
+    });
+
+    const data = await response.json();
+    const summary = data.choices[0].message.content.trim();
+    
+    logger.info(`📝 Generated summary: ${summary}`);
+    return summary;
+
+  } catch (error) {
+    logger.error(`❌ Summary generation failed: ${error.message}`);
+    return "Summary generation failed.";
+  }
+}
+
 function sendTextToOpenAI(ws, text) {
   if (ws?.readyState !== 1) {
     logger.error('Cannot send text - WebSocket not open');
@@ -309,7 +348,7 @@ module.exports = {
   sendOpeningGreeting,
   sendTextToOpenAI,
   sendAudioToOpenAI,
-  extractLeadDataFromTranscript
+  extractLeadDataFromTranscript,
+  generateCallSummary
 };
-
 
